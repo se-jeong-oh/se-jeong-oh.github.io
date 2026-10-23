@@ -57,8 +57,36 @@ a:focus-visible { outline: 2px solid var(--rust); outline-offset: 3px; border-ra
   content: ""; position: absolute; inset: 0; z-index: 5; border-radius: inherit; pointer-events: none;
   box-shadow: inset 0 0 0 clamp(8px, .9vw, 14px) var(--frame), inset 0 0 0 calc(clamp(8px, .9vw, 14px) + 2px) #c9c1b2, inset 0 18px 30px rgba(0, 0, 0, .16);
 }
-.win-layer { position: absolute; inset: 0; }
+.win-layer { position: absolute; inset: 0; box-shadow: 0 0 40px rgba(0, 0, 0, .2); }
 .win-layer img { width: 100%; height: 100%; object-fit: cover; }
+
+/* 사진 넘기기: 좌우 버튼과 점 (사진이 두 장 이상일 때만) */
+.win-btn {
+  position: absolute; top: 50%; z-index: 6; display: none; place-items: center; width: 42px; height: 42px; margin-top: -21px; padding: 0;
+  border: 0; border-radius: 50%; background: rgba(242, 238, 230, .86); color: var(--ink); cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .14); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); transition: background-color .2s;
+}
+.win-btn svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.win-btn.prev { left: clamp(20px, 1.8vw, 28px); }
+.win-btn.next { right: clamp(20px, 1.8vw, 28px); }
+.win-btn:hover { background: #fff; }
+.win-btn:focus-visible, .dot:focus-visible { outline: 2px solid var(--rust); outline-offset: 2px; }
+.win.multi .win-btn { display: grid; }
+.win-dots {
+  position: absolute; left: 50%; bottom: clamp(24px, 2.6vw, 40px); z-index: 6; display: flex; gap: 2px; padding: 3px 6px;
+  border-radius: 99px; background: rgba(29, 27, 24, .34); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); transform: translateX(-50%);
+}
+.win-dots:empty { display: none; }
+.dot { display: grid; place-items: center; width: 18px; height: 16px; padding: 0; border: 0; background: none; cursor: pointer; }
+.dot::before { content: ""; width: 6px; height: 6px; border-radius: 3px; background: rgba(255, 255, 255, .55); transition: width .3s, background-color .3s; }
+.dot.on::before { width: 14px; background: #fff; }
+
+/* 키 안내 (마우스·키보드가 있는 화면에서만) */
+.keys { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 4px; margin: 14px 0 0; font-size: 12.5px; color: var(--mut); }
+.keys-photo { display: inline-flex; align-items: center; gap: 4px; margin-left: 12px; }
+.keys-photo[hidden] { display: none; }
+kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; padding: 0 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; background: #f7f4ee; font: 600 12px var(--sans); color: var(--ink); }
+@media (hover: none), (pointer: coarse) { .keys { display: none; } }
 .win-cap { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; min-height: 22px; margin-top: 14px; font-size: 13px; color: var(--mut); }
 .win-cap span:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .win-cap em { margin-right: 8px; font: italic 17px var(--num); color: var(--ink); }
@@ -97,30 +125,19 @@ a:focus-visible { outline: 2px solid var(--rust); outline-offset: 3px; border-ra
 .place { margin: 14px 0 18px; font-family: var(--serif); font-size: clamp(44px, 5vw, 82px); font-weight: 400; line-height: 1.14; letter-spacing: -.035em; }
 .with { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; font-size: 16px; font-weight: 600; }
 .with i { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
-.with span { font-weight: 500; color: var(--mut); }
 .rule { height: 1px; margin: 28px 0 26px; border: 0; background: var(--line); }
 .story { max-width: 34em; }
 .story p { margin: 0 0 1.1em; font-family: var(--serif); font-size: 17.5px; line-height: 1.95; color: var(--body); }
 .story p.todo { font-family: var(--sans); font-size: 15px; color: var(--mut); }
-.gallery { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 34px; }
-.gallery figure { margin: 0; }
-.gallery img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; border-radius: 6px; background: #ddd6ca; }
-.gallery figcaption { margin-top: 8px; font-size: 13px; color: var(--mut); }
 
 /* 소개 */
 .intro h1 { margin: 30px 0 26px; font-family: var(--serif); font-size: clamp(72px, 8vw, 132px); font-weight: 400; line-height: 1.12; letter-spacing: -.04em; }
 .lead { margin: 0 0 26px; font-size: clamp(18px, 1.5vw, 21px); font-weight: 500; line-height: 1.6; }
 .concept { max-width: 30em; margin: 30px 0 0; padding-left: 18px; border-left: 2px solid var(--ink); font-family: var(--serif); font-size: 18px; line-height: 1.9; color: var(--body); }
-.next { display: inline-flex; gap: 10px; margin-top: 44px; padding-bottom: 4px; border-bottom: 1px solid var(--ink); font-size: 14px; font-weight: 600; text-decoration: none; }
+.start { display: inline-flex; gap: 10px; margin-top: 44px; padding-bottom: 4px; border-bottom: 1px solid var(--ink); font-size: 14px; font-weight: 600; text-decoration: none; }
 
 /* 마무리 */
 .closing { margin: 14px 0 34px; font-family: var(--serif); font-size: clamp(34px, 3.4vw, 54px); font-weight: 400; line-height: 1.4; letter-spacing: -.03em; }
-.cast-h { margin: 0 0 12px; font-size: 13px; font-weight: 600; color: var(--mut); }
-.cast { display: flex; flex-wrap: wrap; gap: 10px 22px; margin: 0 0 34px; padding: 0; list-style: none; }
-.cast li { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 600; }
-.cast i { width: 10px; height: 10px; border-radius: 50%; background: var(--c); }
-.links { margin: 34px 0 0; }
-.links a { margin-right: 20px; font-size: 14px; font-weight: 600; }
 
 /* 나타나는 움직임 (자바스크립트가 .pre/.seen을 붙인다) */
 .pre .reveal { opacity: 0; transform: translateY(16px); }
@@ -170,9 +187,17 @@ a:focus-visible { outline: 2px solid var(--rust); outline-offset: 3px; border-ra
 .mbar-txt b { display: block; overflow: hidden; font-size: 14px; color: var(--ink); white-space: nowrap; text-overflow: ellipsis; }
 .mbar-txt b em { margin-right: 6px; font: italic 16px var(--num); }
 
-/* 본문 안 창문 (휴대폰에서만) */
+/* 본문 안 창문 (휴대폰에서만). 사진은 옆으로 밀어서 넘긴다 */
 .a-window { display: none; margin: 0 0 24px; }
 .a-window .win { aspect-ratio: 4 / 5; min-height: 0; border-radius: 44px; }
+.a-window .track {
+  position: absolute; inset: 0; display: flex; overflow-x: auto; overflow-y: hidden;
+  scroll-snap-type: x mandatory; overscroll-behavior-x: contain; scrollbar-width: none;
+}
+.a-window .track::-webkit-scrollbar { display: none; }
+.slide { position: relative; flex: 0 0 100%; height: 100%; scroll-snap-align: center; scroll-snap-stop: always; }
+.slide img { width: 100%; height: 100%; object-fit: cover; }
+.slide .win-layer { box-shadow: none; }
 
 /* ---------- 반응형 ---------- */
 @media (min-width: 1180px) { .to-index { display: none; } }
@@ -194,7 +219,6 @@ a:focus-visible { outline: 2px solid var(--rust); outline-offset: 3px; border-ra
   .place { font-size: clamp(40px, 11vw, 56px); }
   .story p { font-size: 16.5px; }
   .concept { font-size: 17px; }
-  .gallery { grid-template-columns: 1fr; }
   .index-page { padding-top: 56px; }
   .index-cols { grid-template-columns: 1fr; gap: 36px; }
 }
