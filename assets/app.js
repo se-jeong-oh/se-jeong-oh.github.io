@@ -86,8 +86,7 @@
       <p class="kicker reveal">${kicker(t)}</p>
       <h2 class="place reveal" id="trip-${t.key}-title">${esc(t.place)}</h2>
       <p class="with reveal"><i aria-hidden="true"></i>${esc(t.person.with)}</p>
-      <hr class="rule reveal">
-      <div class="story reveal">${t.story.length ? paras(t.story) : '<p class="todo">이 여행의 이야기를 준비하고 있습니다.</p>'}</div>
+      ${t.story.length ? `<hr class="rule reveal"><div class="story reveal">${paras(t.story)}</div>` : ''}
     </article>`).join('');
 
   const closing = SITE.closing || {};

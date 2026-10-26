@@ -55,22 +55,37 @@ window.TRIPS = [
   {
     places: ['오키나와'], who: 'friends', when: '', stage: '대학생, 군입대 전', tone: 'okinawa-dusk',
     story: [],
-    photos: [],
+    photos: [
+      { src: 'photos/03-okinawa/01.jpg', alt: '다리가 놓인 얕은 바다에서 사람들이 물놀이하는 모습', focus: '60% 50%' },
+      { src: 'photos/03-okinawa/02.jpg', alt: '파란 하늘 아래 계단식으로 지은 하얀 건물', focus: '55% 50%' },
+      { src: 'photos/03-okinawa/03.jpg', alt: '불빛이 켜진 밤거리에서 찍은 사진' },
+    ],
   },
   {
     places: ['고베', '오사카'], who: 'grad', when: '', stage: '대학원생 · 학회', tone: 'kobe',
     story: [],
-    photos: [],
+    photos: [
+      { src: 'photos/04-kobe-osaka/01.jpg', alt: '나무 사이로 내려다본 시내', focus: '55% 50%' },
+      { src: 'photos/04-kobe-osaka/02.jpg', alt: '요리사가 철판 위에서 고기와 채소를 굽는 모습' },
+      { src: 'photos/04-kobe-osaka/03.jpg', alt: '발표 화면을 향해 앉아 있는 학회장', focus: '62% 50%' },
+    ],
   },
   {
     places: ['나고야'], who: 'disciples', when: '', stage: '졸업 즈음', tone: 'nagoya',
     story: [],
-    photos: [],
+    photos: [
+      { src: 'photos/05-nagoya/01.jpg', alt: '여행 가방을 끌고 길을 걷는 일행' },
+      { src: 'photos/05-nagoya/02.jpg', alt: '해 질 녘 버스가 지나가는 큰길' },
+    ],
   },
   {
     places: ['도쿄'], who: 'village', when: '2025년', stage: '', tone: 'tokyo-night',
     story: [],
-    photos: [],
+    photos: [
+      { src: 'photos/06-tokyo/01.jpg', alt: '밤하늘을 가득 채운 등불' },
+      { src: 'photos/06-tokyo/02.jpg', alt: '비행기 좌석에서 선글라스를 쓰고 브이를 하는 모습', focus: '38% 50%' },
+      { src: 'photos/06-tokyo/03.jpg', alt: '빨간 택시가 서 있는 도쿄 시내 거리', focus: '55% 50%' },
+    ],
   },
   {
     places: ['삿포로'], who: 'parents', when: '', stage: '결혼 전', tone: 'sapporo',
@@ -80,11 +95,19 @@ window.TRIPS = [
   {
     places: ['호주', '뉴질랜드'], who: 'wife', when: '', stage: '신혼여행', tone: 'new-zealand',
     story: [],
-    photos: [],
+    photos: [
+      { src: 'photos/08-australia-nz/01.jpg', alt: '큰 창 너머로 보이는 호수와 눈 덮인 산, 창가에 선 사람', focus: '70% 50%' },
+      { src: 'photos/08-australia-nz/02.jpg', alt: '밤하늘을 가로지르는 은하수' },
+      { src: 'photos/08-australia-nz/03.jpg', alt: '나무 사이를 걷는 에뮤', focus: '55% 50%' },
+    ],
   },
   {
     places: ['도쿄'], who: 'wife', when: '', stage: '최근', tone: 'tokyo-day',
     story: [],
-    photos: [],
+    photos: [
+      { src: 'photos/09-tokyo/01.jpg', alt: '붉은 등과 깃발이 걸린 돌계단' },
+      { src: 'photos/09-tokyo/02.jpg', alt: '장어덮밥과 반찬이 차려진 상' },
+      { src: 'photos/09-tokyo/03.jpg', alt: '파란 지니 캐릭터 옆에 모인 사람들', focus: '50% 40%' },
+    ],
   },
 ];

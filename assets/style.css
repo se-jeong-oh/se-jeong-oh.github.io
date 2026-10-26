@@ -128,7 +128,6 @@ kbd { display: inline-grid; place-items: center; min-width: 22px; height: 22px; 
 .rule { height: 1px; margin: 28px 0 26px; border: 0; background: var(--line); }
 .story { max-width: 34em; }
 .story p { margin: 0 0 1.1em; font-family: var(--serif); font-size: 17.5px; line-height: 1.95; color: var(--body); }
-.story p.todo { font-family: var(--sans); font-size: 15px; color: var(--mut); }
 
 /* 소개 */
 .intro h1 { margin: 30px 0 26px; font-family: var(--serif); font-size: clamp(72px, 8vw, 132px); font-weight: 400; line-height: 1.12; letter-spacing: -.04em; }
