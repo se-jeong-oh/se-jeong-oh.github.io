@@ -90,7 +90,11 @@ window.TRIPS = [
   {
     places: ['삿포로'], who: 'parents', when: '', stage: '결혼 전', tone: 'sapporo',
     story: [],
-    photos: [],
+    photos: [
+      { src: 'photos/07-sapporo/01.jpg', alt: '도시 불빛을 배경으로 한 파르페' },
+      { src: 'photos/07-sapporo/02.jpg', alt: '인도를 걷는 시바견', focus: '45% 50%' },
+      { src: 'photos/07-sapporo/03.jpg', alt: '숙소 옷을 입고 거울 앞에서 찍은 사진' },
+    ],
   },
   {
     places: ['호주', '뉴질랜드'], who: 'wife', when: '', stage: '신혼여행', tone: 'new-zealand',
