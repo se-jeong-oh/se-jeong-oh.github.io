@@ -19,6 +19,8 @@
 //  수박게임(Suika)식 합성 퍼즐 + 차오르는 홍수(압박) + 무지개(구원)
 // ════════════════════════════════════════════════════════════
 const W = 480, H = 800;
+// 선명도: 내부 캔버스를 S배로 만들고 카메라를 S배 줌 (좌표계는 그대로 480x800)
+const S = (window.devicePixelRatio || 1) >= 2.5 ? 3 : 2;
 const FONT = '"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif';
 
 // 방주 내부(플레이 영역)
@@ -34,8 +36,9 @@ const CEIL = 84;                  // 천장(HUD 아래). 눌려서 위로 튀어
 const MAX_STEP_V = 9;             // 한 스텝 최대 이동량(px) ≈ 초속 1080px
 
 // 홍수
-const WATER_RATE = 0.35;          // 초당 px
-const WATER_MAX = 105;
+const CUBIT = 7;                  // 1규빗 = 7px (창세기 7:20, 물이 15규빗까지 오름)
+const WATER_RATE = 0.525;         // 초당 px (기존 0.35의 1.5배) ≈ 초당 0.075규빗
+const WATER_MAX = 15 * CUBIT;
 const RAINBOW_RELIEF = 65;
 
 const LB_KEY = 'noah-ark-leaderboard-v2';
@@ -80,7 +83,7 @@ const Leaderboard = {
 
 const txt = (scene, x, y, str, size, color, o = {}) =>
   scene.add.text(x, y, str, {
-    fontFamily: FONT, fontSize: size + 'px', color: color || '#ffffff',
+    fontFamily: FONT, fontSize: size + 'px', color: color || '#ffffff', resolution: S,
     align: o.align || 'center', fontStyle: o.bold ? 'bold' : 'normal',
     lineSpacing: o.lineSpacing || 0,
   }).setOrigin(o.ox === undefined ? 0.5 : o.ox, o.oy === undefined ? 0.5 : o.oy);
@@ -108,21 +111,23 @@ class Main extends Phaser.Scene {
     this.clock = 0;
     this.ac = null;
 
+    this.cameras.main.setZoom(S);
+    this.cameras.main.centerOn(W / 2, H / 2);
     this.drawStatic();
 
     this.input.on('pointermove', (p) => {
-      if (this.state === 'play') this.aimX = p.x;
+      if (this.state === 'play') this.aimX = p.x / S;
     });
     this.input.on('pointerdown', (p) => {
       this.initAudio();
       if (this.state !== 'play') return;
-      this.aimX = p.x;
+      this.aimX = p.x / S;
       this.aiming = true;
     });
     this.input.on('pointerup', (p) => {
       if (this.state !== 'play' || !this.aiming) return;
       this.aiming = false;
-      this.aimX = p.x;
+      this.aimX = p.x / S;
       this.tryDrop();
     });
 
@@ -165,6 +170,16 @@ class Main extends Phaser.Scene {
       this.waves.push(w);
     }
 
+    // 수위 눈금자 (오른쪽 벽): 1규빗마다 눈금, 5규빗마다 숫자
+    for (let i = 0; i <= 15; i++) {
+      const y = FLOOR0 - i * CUBIT, w = i % 5 === 0 ? 16 : 8;
+      this.add.rectangle(XR + 2 + w / 2, y, w, 2, i === 15 ? 0xff8a8a : 0xf6e2b8, 0.9).setDepth(3.5);
+      if (i % 5 === 0 && i > 0) txt(this, XR + 26, y - 1, String(i), 12, i === 15 ? '#ff8a8a' : '#f6e2b8', { bold: true }).setDepth(3.6);
+    }
+    // 현재 수위 표시 (왼쪽 벽, 수면을 따라 움직임)
+    this.waterTag = this.add.rectangle(XL / 2, FLOOR0, XL - 2, 18, 0x0a1829, 0.95).setDepth(3.5);
+    this.waterTagText = txt(this, XL / 2, FLOOR0, '0.0', 12, '#9fd4ff', { bold: true }).setDepth(3.6);
+
     // 위험선
     this.lineRect = this.add.rectangle(W / 2, LINE_Y, XR - XL, 3, 0xff5a5a, 0.3).setDepth(1.5);
     this.lineText = txt(this, W / 2, LINE_Y - 14, '위험!', 16, '#ff8a8a', { bold: true }).setDepth(6).setAlpha(0);
@@ -182,7 +197,8 @@ class Main extends Phaser.Scene {
     txt(this, W / 2, 12, '다음', 14, '#8fb4d9', { oy: 0 }).setDepth(9);
     this.nextCircle = this.add.circle(W / 2, 58, 24, 0xffffff, 0.5).setDepth(9);
     this.nextText = txt(this, W / 2, 58, '', 30).setDepth(9.5);
-    this.comboText = txt(this, W / 2, 112, '', 26, '#ffd966', { bold: true }).setDepth(9);
+    this.waterText = txt(this, 16, 112, '', 16, '#9fd4ff', { ox: 0, bold: true }).setDepth(9);
+    this.comboText = txt(this, W - 16, 112, '', 24, '#ffd966', { ox: 1, bold: true }).setDepth(9);
 
     // 하단 합성표 (수박게임 진화표처럼)
     this.add.rectangle(W / 2, 768, W, 64, 0x0a1829, 0.95).setDepth(8);
@@ -224,7 +240,7 @@ class Main extends Phaser.Scene {
       '🖐  화면을 드래그해 위치를 잡고, 떼면 떨어집니다\n' +
       '🐑🐑 같은 동물이 닿으면 더 큰 동물로 합쳐집니다\n' +
       '🐘🐘 코끼리 두 마리가 만나면… 🌈\n' +
-      '🌊 물이 계속 차오릅니다. 무지개가 물을 물리칩니다\n' +
+      '🌊 수위(규빗)가 계속 오릅니다. 무지개가 물을 물리칩니다\n' +
       '⚠️ 동물이 빨간 선 위로 쌓이면 끝',
       18, '#e8f1fb', { lineSpacing: 12 }));
     this.button('시작', W / 2, 495, () => this.startGame());
@@ -254,6 +270,7 @@ class Main extends Phaser.Scene {
     this.bestShown = Leaderboard.best();
     this.makeHold();
     this.refreshHud();
+    this.waterText.setText('🌊 수위 0.0 / 15 규빗');
   }
 
   makeHold() {
@@ -261,7 +278,7 @@ class Main extends Phaser.Scene {
     this.nextTier = rollTier();
     const def = TIERS[tier];
     const circle = this.add.circle(this.aimX, SPAWN_Y, def.r, def.c, 0.55).setStrokeStyle(2, 0xffffff, 0.35).setDepth(4);
-    const text = this.add.text(this.aimX, SPAWN_Y, def.e, { fontFamily: FONT, fontSize: Math.round(def.r * 1.5) + 'px' })
+    const text = this.add.text(this.aimX, SPAWN_Y, def.e, { fontFamily: FONT, fontSize: Math.round(def.r * 1.5) + 'px', resolution: S })
       .setOrigin(0.5).setPadding(6, 6, 6, 6).setDepth(5);
     this.hold = { tier, circle, text };
     this.guide.setVisible(true);
@@ -286,7 +303,7 @@ class Main extends Phaser.Scene {
   addPiece(tier, x, y, vx, vy) {
     const def = TIERS[tier];
     const circle = this.add.circle(x, y, def.r, def.c, 0.55).setStrokeStyle(2, 0xffffff, 0.35).setDepth(4);
-    const text = this.add.text(x, y, def.e, { fontFamily: FONT, fontSize: Math.round(def.r * 1.5) + 'px' })
+    const text = this.add.text(x, y, def.e, { fontFamily: FONT, fontSize: Math.round(def.r * 1.5) + 'px', resolution: S })
       .setOrigin(0.5).setPadding(6, 6, 6, 6).setDepth(5);
     const p = { tier, r: def.r, x, y, px: x - vx, py: y - vy, age: 0, circle, text, dead: false };
     this.pieces.push(p);
@@ -392,13 +409,15 @@ class Main extends Phaser.Scene {
   rainbow(x, y, mult) {
     const pts = Math.round(RAINBOW_SCORE * mult);
     this.score += pts;
-    this.waterTarget = Math.max(0, this.waterTarget - RAINBOW_RELIEF);
+    const before = this.waterTarget;
+    this.waterTarget = Math.max(0, before - RAINBOW_RELIEF);
+    const relief = ((before - this.waterTarget) / CUBIT).toFixed(1);
     this.burst(x, y, 0xffd24a, 22);
     this.cameras.main.flash(350, 255, 255, 255);
     this.cameras.main.shake(300, 0.01);
     const r = txt(this, W / 2, 400, '🌈', 180).setDepth(60).setAlpha(0.95).setScale(0.4);
     this.tweens.add({ targets: r, scale: 1.3, alpha: 0, duration: 1400, ease: 'Sine.Out', onComplete: () => r.destroy() });
-    const m = txt(this, W / 2, 300, '언약의 무지개!\n물이 물러갑니다', 30, '#fff2b8', { bold: true, lineSpacing: 6 }).setDepth(60);
+    const m = txt(this, W / 2, 300, `언약의 무지개!\n수위 -${relief}규빗`, 30, '#fff2b8', { bold: true, lineSpacing: 6 }).setDepth(60);
     this.tweens.add({ targets: m, y: 250, alpha: 0, duration: 1800, onComplete: () => m.destroy() });
     this.floatText(x, y - 40, '+' + pts, '#ffe066');
     // 작은 동물들은 물과 함께 씻겨 내려갑니다
@@ -465,6 +484,7 @@ class Main extends Phaser.Scene {
     if (this.hold) { this.hold.circle.destroy(); this.hold.text.destroy(); this.hold = null; }
     this.lineText.setAlpha(0);
     this.comboText.setText('');
+    this.waterText.setText('');
     this.cameras.main.shake(300, 0.008);
     [330, 262, 196].forEach((f, i) => this.time.delayedCall(i * 150, () => this.sfx(f, 0.3, 'sawtooth', 0.07)));
     this.clearUI();
@@ -516,6 +536,11 @@ class Main extends Phaser.Scene {
     this.floorY = FLOOR0 - this.water;
     this.waterRect.y = this.floorY + 2;
     this.waterRect.setSize(XR - XL, FLOOR_BOTTOM - this.floorY - 2);
+    const cub = this.water / CUBIT;
+    this.waterTag.y = this.floorY; this.waterTagText.y = this.floorY;
+    this.waterTagText.setText(cub.toFixed(1));
+    this.waterText.setText(`🌊 수위 ${cub.toFixed(1)} / 15 규빗`);
+    this.waterText.setColor(cub >= 11 ? '#ff9a9a' : '#9fd4ff');
 
     // 물리 (고정 스텝)
     this.acc += dtRaw;
@@ -569,8 +594,8 @@ class Main extends Phaser.Scene {
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
-  width: W,
-  height: H,
+  width: W * S,
+  height: H * S,
   backgroundColor: '#0f2238',
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
   scene: Main,
