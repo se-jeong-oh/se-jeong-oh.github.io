@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>노아의 방주 — 짝을 맞춰라</title>
+<meta name="description" content="물이 차오르기 전에 방주에 동물을 태우세요. 창세기 7장을 모티브로 한 점수제 웹 게임.">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1d33; overflow: hidden; touch-action: manipulation; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+const W = 480, H = 800;
+const FONT = '"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif';
+const MAX_TIME = 60;
+const GROUND_Y = 640;       // 동물이 걷는 바닥선
+const DOOR = { x: W / 2, y: 392 };
+const LB_KEY = 'noah-ark-leaderboard-v1';
+const NAME_KEY = 'noah-ark-name';
+
+// 창세기 7:2 모티브 — 정결한 짐승은 더 많이, 부정한 짐승은 한 쌍.
+// (게임에서는 단순화: 정결 4마리 / 부정 2마리)
+const CLEAN   = [['🐑','양'], ['🐄','소'], ['🐐','염소'], ['🕊️','비둘기'], ['🦌','사슴']];
+const UNCLEAN = [['🦁','사자'], ['🐫','낙타'], ['🐖','돼지'], ['🐺','늑대'], ['🦅','독수리']];
+
+const shuffle = (arr) => {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+};
+
+// ───────── 리더보드 (지금은 브라우저 로컬 저장) ─────────
+// 나중에 서버(Supabase/Workers 등)로 바꿀 때는 이 두 함수만 교체하면 됩니다.
+const Leaderboard = {
+  load() {
+    try { return JSON.parse(localStorage.getItem(LB_KEY)) || []; } catch (e) { return []; }
+  },
+  add(name, score) {
+    const list = this.load();
+    list.push({ name, score, at: Date.now() });
+    list.sort((a, b) => b.score - a.score || a.at - b.at);
+    const top = list.slice(0, 20);
+    try { localStorage.setItem(LB_KEY, JSON.stringify(top)); } catch (e) {}
+    return top;
+  },
+};
+
+const txt = (scene, x, y, str, size, color, o = {}) =>
+  scene.add.text(x, y, str, {
+    fontFamily: FONT, fontSize: size + 'px', color: color || '#ffffff',
+    align: o.align || 'center', fontStyle: o.bold ? 'bold' : 'normal',
+    wordWrap: o.wrap ? { width: o.wrap } : undefined, lineSpacing: o.lineSpacing || 0,
+  }).setOrigin(o.ox === undefined ? 0.5 : o.ox, o.oy === undefined ? 0.5 : o.oy);
+
+class Main extends Phaser.Scene {
+  constructor() { super('main'); }
+
+  create() {
+    this.state = 'menu';
+    this.animals = [];
+    this.manifest = [];
+    this.cells = [];
+
+    // 배경
+    this.add.rectangle(W / 2, H / 2, W, H, 0x14304f);
+    this.add.rectangle(W / 2, 260, W, 520, 0x1d4469, 0.55);
+    this.add.rectangle(W / 2, 730, W, 180, 0x3b5d2a).setDepth(1); // 땅
+
+    // 방주
+    this.add.rectangle(W / 2, 352, 400, 76, 0x8b5a2b).setDepth(1);
+    this.add.rectangle(W / 2, 303, 300, 30, 0xa9743c).setDepth(1);
+    this.add.rectangle(DOOR.x, DOOR.y, 70, 36, 0x4a2f14).setDepth(1);
+    txt(this, W / 2, 352, '방주', 22, '#f6e2b8', { bold: true }).setDepth(2).setY(334);
+
+    // 명단 패널
+    this.add.rectangle(W / 2, 170, W - 20, 124, 0x0d2238, 0.85).setDepth(2);
+
+    // 물 (시간)
+    this.water = this.add.rectangle(0, H, W, 0, 0x2a6fb5, 0.72).setOrigin(0, 0).setDepth(5);
+
+    // HUD
+    this.scoreText = txt(this, 16, 14, '점수 0', 26, '#ffffff', { ox: 0, oy: 0, bold: true }).setDepth(10);
+    this.timeText  = txt(this, W - 16, 14, '60초', 26, '#bfe3ff', { ox: 1, oy: 0, bold: true }).setDepth(10);
+    this.comboText = txt(this, W / 2, 62, '', 22, '#ffd966', { bold: true }).setDepth(10);
+
+    this.ui = this.add.container(0, 0).setDepth(100);
+    this.showMenu();
+  }
+
+  // ───────── UI 오버레이 ─────────
+  clearUI() { this.ui.removeAll(true); }
+
+  dim() {
+    const r = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.72).setInteractive();
+    this.ui.add(r);
+  }
+
+  button(label, x, y, cb, w = 240) {
+    const bg = this.add.rectangle(x, y, w, 58, 0xe0b04a).setInteractive({ useHandCursor: true });
+    const t = txt(this, x, y, label, 24, '#2b1a05', { bold: true });
+    bg.on('pointerdown', cb);
+    this.ui.add([bg, t]);
+  }
+
+  boardList(y, n = 5) {
+    const list = Leaderboard.load().slice(0, n);
+    const lines = list.length
+      ? list.map((r, i) => `${i + 1}.  ${r.name}   ${r.score}`).join('\n')
+      : '아직 기록이 없습니다';
+    this.ui.add(txt(this, W / 2, y, '🏆 리더보드 (이 기기)', 20, '#ffd966', { bold: true }));
+    this.ui.add(txt(this, W / 2, y + 28, lines, 20, '#e8f1fb', { oy: 0, lineSpacing: 6 }));
+  }
+
+  showMenu() {
+    this.clearUI();
+    this.dim();
+    this.ui.add(txt(this, W / 2, 150, '노아의 방주', 52, '#ffe6a8', { bold: true }));
+    this.ui.add(txt(this, W / 2, 205, '물이 차오르기 전에, 짝을 맞춰 태워라', 20, '#bfe3ff'));
+    this.ui.add(txt(this, W / 2, 330,
+      '· 지나가는 동물을 탭하면 방주에 탑니다\n' +
+      '· 위쪽 명단의 수만큼만 태우세요\n' +
+      '   넘치게 태우면 감점 + 시간 감소\n' +
+      '· 정결한 동물 4마리, 부정한 동물 2마리\n' +
+      '   (창세기 7장 모티브)\n' +
+      '· 명단을 다 채우면 방주 완성! 보너스 + 시간',
+      19, '#e8f1fb', { lineSpacing: 8 }));
+    this.button('시작', W / 2, 500, () => this.startGame());
+    this.boardList(580);
+  }
+
+  // ───────── 게임 흐름 ─────────
+  startGame() {
+    this.clearUI();
+    this.animals.forEach(a => a.destroy());
+    this.animals = [];
+    this.score = 0;
+    this.combo = 0;
+    this.timeLeft = MAX_TIME;
+    this.elapsed = 0;
+    this.spawnTimer = 0.4;
+    this.roundLock = false;
+    this.rounds = 0;
+    this.newManifest();
+    this.state = 'play';
+    this.refreshHud();
+  }
+
+  newManifest() {
+    const pick = [
+      ...shuffle(CLEAN).slice(0, 3).map(([e, n]) => ({ emoji: e, name: n, clean: true, quota: 4, count: 0 })),
+      ...shuffle(UNCLEAN).slice(0, 3).map(([e, n]) => ({ emoji: e, name: n, clean: false, quota: 2, count: 0 })),
+    ];
+    this.manifest = shuffle(pick);
+    this.cells.forEach(c => c.group.forEach(o => o.destroy()));
+    this.cells = this.manifest.map((sp, i) => {
+      const x = 40 + i * 80;
+      const e = txt(this, x, 138, sp.emoji, 38).setDepth(3);
+      const c = txt(this, x, 182, `0/${sp.quota}`, 20, '#ffffff', { bold: true }).setDepth(3);
+      const tag = txt(this, x, 210, sp.clean ? '정결' : '부정', 13, sp.clean ? '#9be59b' : '#ffb27a').setDepth(3);
+      return { count: c, group: [e, c, tag], emoji: e };
+    });
+    this.manifest.forEach((sp, i) => (sp.idx = i));
+    this.roundLock = false;
+  }
+
+  refreshHud() {
+    this.scoreText.setText('점수 ' + this.score);
+    this.timeText.setText(Math.max(0, Math.ceil(this.timeLeft)) + '초');
+    this.comboText.setText(this.combo >= 2 ? `${this.combo} 연속!` : '');
+  }
+
+  floatText(x, y, str, color) {
+    const t = txt(this, x, y, str, 26, color, { bold: true }).setDepth(50);
+    this.tweens.add({ targets: t, y: y - 60, alpha: 0, duration: 900, onComplete: () => t.destroy() });
+  }
+
+  spawn() {
+    const sp = this.manifest[Math.floor(Math.random() * this.manifest.length)];
+    const a = this.add.text(-40, GROUND_Y, sp.emoji, { fontFamily: FONT, fontSize: '64px' })
+      .setOrigin(0.5, 1).setPadding(10, 10, 10, 6).setDepth(3);
+    a.sp = sp;
+    a.vx = 105 + Math.min(this.elapsed * 1.2, 85) + Math.random() * 25;
+    a.setInteractive({ useHandCursor: true });
+    a.on('pointerdown', () => this.board(a));
+    this.animals.push(a);
+  }
+
+  board(a) {
+    if (this.state !== 'play' || a.boarded) return;
+    a.boarded = true;
+    a.disableInteractive();
+    this.animals = this.animals.filter(o => o !== a);
+    const sp = a.sp;
+
+    if (sp.count < sp.quota) {
+      // 정상 승선
+      sp.count++;
+      this.combo++;
+      const pts = 10 + Math.min(this.combo, 10) * 2;
+      this.score += pts;
+      this.floatText(a.x, a.y - 70, '+' + pts, '#a8ff9e');
+      this.tweens.add({
+        targets: a, x: DOOR.x, y: DOOR.y, scale: 0.3, alpha: 0.2, duration: 380,
+        onComplete: () => a.destroy(),
+      });
+      const cell = this.cells[sp.idx];
+      cell.count.setText(`${sp.count}/${sp.quota}`);
+      if (sp.count === sp.quota) {
+        cell.count.setColor('#7dff7d');
+        cell.emoji.setAlpha(0.5);
+        this.score += 30;
+        this.floatText(60 + sp.idx * 70, 250, `${sp.name} 완료 +30`, '#ffe066');
+      }
+      if (this.manifest.every(s => s.count >= s.quota)) this.completeArk();
+    } else {
+      // 초과 승선 — 감점
+      this.combo = 0;
+      this.score = Math.max(0, this.score - 20);
+      this.timeLeft -= 3;
+      this.cameras.main.shake(150, 0.006);
+      this.floatText(a.x, a.y - 70, '넘쳤다! -20 / -3초', '#ff7b7b');
+      this.tweens.add({
+        targets: a, angle: 90, alpha: 0, y: a.y + 30, duration: 350,
+        onComplete: () => a.destroy(),
+      });
+    }
+    this.refreshHud();
+  }
+
+  completeArk() {
+    this.roundLock = true;
+    this.rounds++;
+    this.score += 100;
+    this.timeLeft = Math.min(MAX_TIME, this.timeLeft + 10);
+    this.floatText(W / 2, 260, '방주 완성! +100 / +10초', '#ffe066');
+    this.animals.forEach(a => { a.disableInteractive(); this.tweens.add({ targets: a, alpha: 0, duration: 300, onComplete: () => a.destroy() }); });
+    this.animals = [];
+    this.time.delayedCall(900, () => { if (this.state === 'play') this.newManifest(); });
+  }
+
+  gameOver() {
+    this.state = 'over';
+    this.animals.forEach(a => a.destroy());
+    this.animals = [];
+    this.comboText.setText('');
+    this.timeText.setText('0초');
+
+    // 결과 화면을 먼저 보여준 뒤 이름 입력
+    this.clearUI();
+    this.dim();
+    this.ui.add(txt(this, W / 2, 170, '물이 차올랐습니다', 38, '#ffe6a8', { bold: true }));
+    this.ui.add(txt(this, W / 2, 250, `점수 ${this.score}`, 44, '#ffffff', { bold: true }));
+    this.ui.add(txt(this, W / 2, 300, `완성한 방주 ${this.rounds}척`, 20, '#bfe3ff'));
+    this.time.delayedCall(450, () => this.askName());
+  }
+
+  askName() {
+    let saved = '';
+    try { saved = localStorage.getItem(NAME_KEY) || ''; } catch (e) {}
+    let name = null;
+    if (this.score > 0) {
+      name = window.prompt('리더보드에 등록할 이름 (최대 8자, 취소하면 등록 안 함)', saved);
+    }
+    if (name && name.trim()) {
+      name = name.trim().slice(0, 8);
+      try { localStorage.setItem(NAME_KEY, name); } catch (e) {}
+      Leaderboard.add(name, this.score);
+    }
+    this.clearUI();
+    this.dim();
+    this.ui.add(txt(this, W / 2, 130, '물이 차올랐습니다', 34, '#ffe6a8', { bold: true }));
+    this.ui.add(txt(this, W / 2, 200, `점수 ${this.score}`, 44, '#ffffff', { bold: true }));
+    this.ui.add(txt(this, W / 2, 248, `완성한 방주 ${this.rounds}척`, 20, '#bfe3ff'));
+    this.boardList(330, 8);
+    this.button('다시 하기', W / 2, 650, () => this.startGame());
+  }
+
+  // ───────── 매 프레임 ─────────
+  update(time, delta) {
+    if (this.state !== 'play') return;
+    const dt = Math.min(delta / 1000, 0.1);
+    this.timeLeft -= dt;
+    this.elapsed += dt;
+
+    if (!this.roundLock) {
+      this.spawnTimer -= dt;
+      if (this.spawnTimer <= 0) {
+        this.spawn();
+        this.spawnTimer = Math.max(0.65, 1.5 - this.elapsed * 0.012) * (0.8 + Math.random() * 0.4);
+      }
+    }
+
+    for (const a of this.animals) {
+      a.x += a.vx * dt;
+      a.y = GROUND_Y - Math.abs(Math.sin(a.x * 0.06)) * 8;
+    }
+    this.animals = this.animals.filter(a => {
+      if (a.x > W + 50) { a.destroy(); return false; }
+      return true;
+    });
+
+    // 물 높이 = 남은 시간
+    const frac = 1 - Math.max(0, this.timeLeft) / MAX_TIME;
+    const wh = 40 + frac * 240;
+    this.water.y = H - wh;
+    this.water.setSize(W, wh);
+
+    this.refreshHud();
+    if (this.timeLeft <= 0) this.gameOver();
+  }
+}
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: W,
+  height: H,
+  backgroundColor: '#14304f',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: Main,
+});
+</script>
+</body>
+</html>
