@@ -20,7 +20,9 @@
 // ════════════════════════════════════════════════════════════
 const W = 480, H = 800;
 // 선명도: 내부 캔버스를 S배로 만들고 카메라를 S배 줌 (좌표계는 그대로 480x800)
-const S = (window.devicePixelRatio || 1) >= 2.5 ? 3 : 2;
+const DPR = window.devicePixelRatio || 1;
+const S = Math.round(Math.max(1.5, Math.min(3.5, Math.min(window.innerWidth * DPR / W, window.innerHeight * DPR / H))) * 100) / 100;
+const K = 1 / S;   // 글자는 S배 크게 그린 뒤 K배로 줄여 놓는다 → 카메라 줌 S와 만나 화면에서 1:1로 선명
 const FONT = '"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif';
 
 // 방주 내부(플레이 영역)
@@ -83,10 +85,10 @@ const Leaderboard = {
 
 const txt = (scene, x, y, str, size, color, o = {}) =>
   scene.add.text(x, y, str, {
-    fontFamily: FONT, fontSize: size + 'px', color: color || '#ffffff', resolution: S,
+    fontFamily: FONT, fontSize: Math.round(size * S) + 'px', color: color || '#ffffff',
     align: o.align || 'center', fontStyle: o.bold ? 'bold' : 'normal',
     lineSpacing: o.lineSpacing || 0,
-  }).setOrigin(o.ox === undefined ? 0.5 : o.ox, o.oy === undefined ? 0.5 : o.oy);
+  }).setOrigin(o.ox === undefined ? 0.5 : o.ox, o.oy === undefined ? 0.5 : o.oy).setScale(K);
 
 class Main extends Phaser.Scene {
   constructor() { super('main'); }
@@ -245,6 +247,7 @@ class Main extends Phaser.Scene {
       18, '#e8f1fb', { lineSpacing: 12 }));
     this.button('시작', W / 2, 495, () => this.startGame());
     this.boardList(575);
+    this.ui.add(txt(this, W / 2, 786, `build r4 · 해상도 ×${S}`, 11, '#5f86ad'));
   }
 
   // ═════════════ 게임 흐름 ═════════════
@@ -278,8 +281,8 @@ class Main extends Phaser.Scene {
     this.nextTier = rollTier();
     const def = TIERS[tier];
     const circle = this.add.circle(this.aimX, SPAWN_Y, def.r, def.c, 0.55).setStrokeStyle(2, 0xffffff, 0.35).setDepth(4);
-    const text = this.add.text(this.aimX, SPAWN_Y, def.e, { fontFamily: FONT, fontSize: Math.round(def.r * 1.5) + 'px', resolution: S })
-      .setOrigin(0.5).setPadding(6, 6, 6, 6).setDepth(5);
+    const text = this.add.text(this.aimX, SPAWN_Y, def.e, { fontFamily: FONT, fontSize: Math.round(def.r * 1.5 * S) + 'px' })
+      .setOrigin(0.5).setPadding(6, 6, 6, 6).setDepth(5).setScale(K);
     this.hold = { tier, circle, text };
     this.guide.setVisible(true);
     const nd = TIERS[this.nextTier];
@@ -303,8 +306,8 @@ class Main extends Phaser.Scene {
   addPiece(tier, x, y, vx, vy) {
     const def = TIERS[tier];
     const circle = this.add.circle(x, y, def.r, def.c, 0.55).setStrokeStyle(2, 0xffffff, 0.35).setDepth(4);
-    const text = this.add.text(x, y, def.e, { fontFamily: FONT, fontSize: Math.round(def.r * 1.5) + 'px', resolution: S })
-      .setOrigin(0.5).setPadding(6, 6, 6, 6).setDepth(5);
+    const text = this.add.text(x, y, def.e, { fontFamily: FONT, fontSize: Math.round(def.r * 1.5 * S) + 'px' })
+      .setOrigin(0.5).setPadding(6, 6, 6, 6).setDepth(5).setScale(K);
     const p = { tier, r: def.r, x, y, px: x - vx, py: y - vy, age: 0, circle, text, dead: false };
     this.pieces.push(p);
     return p;
@@ -396,8 +399,9 @@ class Main extends Phaser.Scene {
     const y = Math.min(my, this.floorY - def.r);
     const p = this.addPiece(nt, x, y, vx * 0.5, vy * 0.5);
     p.age = 0;
-    p.circle.setScale(1.35); p.text.setScale(1.35);
-    this.tweens.add({ targets: [p.circle, p.text], scale: 1, duration: 220, ease: 'Back.Out' });
+    p.circle.setScale(1.35); p.text.setScale(1.35 * K);
+    this.tweens.add({ targets: p.circle, scale: 1, duration: 220, ease: 'Back.Out' });
+    this.tweens.add({ targets: p.text, scale: K, duration: 220, ease: 'Back.Out' });
     this.burst(x, y, def.c, 6 + nt);
     this.floatText(x, y - def.r, '+' + pts, '#ffe9a0');
     this.sfx(260 + nt * 55, 0.14, 'sine', 0.09);
@@ -415,8 +419,8 @@ class Main extends Phaser.Scene {
     this.burst(x, y, 0xffd24a, 22);
     this.cameras.main.flash(350, 255, 255, 255);
     this.cameras.main.shake(300, 0.01);
-    const r = txt(this, W / 2, 400, '🌈', 180).setDepth(60).setAlpha(0.95).setScale(0.4);
-    this.tweens.add({ targets: r, scale: 1.3, alpha: 0, duration: 1400, ease: 'Sine.Out', onComplete: () => r.destroy() });
+    const r = txt(this, W / 2, 400, '🌈', 180).setDepth(60).setAlpha(0.95).setScale(0.4 * K);
+    this.tweens.add({ targets: r, scale: 1.3 * K, alpha: 0, duration: 1400, ease: 'Sine.Out', onComplete: () => r.destroy() });
     const m = txt(this, W / 2, 300, `언약의 무지개!\n수위 -${relief}규빗`, 30, '#fff2b8', { bold: true, lineSpacing: 6 }).setDepth(60);
     this.tweens.add({ targets: m, y: 250, alpha: 0, duration: 1800, onComplete: () => m.destroy() });
     this.floatText(x, y - 40, '+' + pts, '#ffe066');
@@ -434,8 +438,8 @@ class Main extends Phaser.Scene {
 
   showCombo() {
     if (this.combo < 2) return;
-    this.comboText.setText(`콤보 ×${this.combo}`).setScale(1.4).setAlpha(1);
-    this.tweens.add({ targets: this.comboText, scale: 1, duration: 180, ease: 'Back.Out' });
+    this.comboText.setText(`콤보 ×${this.combo}`).setScale(1.4 * K).setAlpha(1);
+    this.tweens.add({ targets: this.comboText, scale: K, duration: 180, ease: 'Back.Out' });
   }
 
   // ═════════════ 효과 ═════════════
