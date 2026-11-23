@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>바벨 — 언어가 흩어지기 전에</title>
+<meta name="description" content="7일 안에 탑을 쌓아 올리세요. 날이 갈수록 말이 흩어져 카드가 가려집니다. 창세기 11장 모티브의 로그라이크 카드 게임.">
+<style>
+  html, body { margin: 0; height: 100%; background: #0b1220; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+// ════════════════════════════════════════════════════════════
+//  바벨 — 언어가 흩어지기 전에
+//  7일 고정 로그라이크 카드 게임. 날이 갈수록 말(카드 정보)이 흩어진다.
+//  아래 LOGIC 구간은 화면과 무관한 순수 로직(테스트 대상).
+// ════════════════════════════════════════════════════════════
+
+/*LOGIC_START*/
+const MAX_DAY = 7;
+const HAND_SIZE = 5, ENERGY = 3, START_BRICKS = 2;
+const BASE_LEVEL = [0, 0, 0, 1, 1, 2, 2, 3];   // 인덱스 = 일차
+const HIDE_P = [0, 0.35, 0.7, 1];              // 혼란 단계별 "처음 보는 카드가 가려질 확률"
+const SKIP_BRICKS = 2;
+const PLAYED_HIDE_MULT = 0.6;   // 써 본 카드는 덜 가려진다(완전히 해독된 카드만 영구히 선명)
+const DECODE_SCORE = 40;
+
+const TYPES = {
+  basic:  { label: '기본', icon: '🧱', color: 0x6b7280 },
+  build:  { label: '건축', icon: '🏗️', color: 0xd97706 },
+  labor:  { label: '인력', icon: '👷', color: 0x2563eb },
+  pride:  { label: '교만', icon: '👑', color: 0x9333ea },
+  decode: { label: '해독', icon: '🗣️', color: 0x16a34a },
+  chaos:  { label: '혼돈', icon: '❓', color: 0x0d9488 },
+};
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function shuffle(arr, rnd) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function floorCost(G) { return Math.max(1, 2 + G.floors - G.costDown - G.dayCostDown); }
+function spireCost(G) { return Math.ceil(floorCost(G) * 1.5); }
+function confusionLevel(G) { return Math.min(3, BASE_LEVEL[Math.min(G.day, MAX_DAY)] + (G.levelBonus || 0)); }
+
+function allIds(G) {
+  const s = new Set();
+  for (const c of G.draw) s.add(c.id);
+  for (const c of G.hand) s.add(c.id);
+  for (const c of G.discard) s.add(c.id);
+  return [...s];
+}
+function decodeId(G, id) {
+  G.decoded.add(id);
+  for (const x of G.hand) if (x.id === id) x.hidden = false;
+}
+
+const CARDS = {
+  // ── 기본(시작 덱, 항상 선명) ──
+  mud:   { name: '진흙 벽돌', type: 'basic', cost: 1, rarity: 'starter', desc: '벽돌 +2',
+           play(G) { G.bricks += 2; return '벽돌 +2'; } },
+  stack: { name: '층 쌓기', type: 'basic', cost: 1, rarity: 'starter', desc: '벽돌을 내고 층 +1 (비용 2 + 현재 층수)',
+           can(G) { return G.bricks >= floorCost(G); }, why: '벽돌이 모자랍니다',
+           play(G) { const c = floorCost(G); G.bricks -= c; G.floors += 1; return `층 +1 (벽돌 -${c})`; } },
+  hire:  { name: '일꾼 모집', type: 'basic', cost: 1, rarity: 'starter', desc: '일꾼 +1 (저녁마다 벽돌 +1)',
+           play(G) { G.workers += 1; return '일꾼 +1'; } },
+
+  // ── 건축 ──
+  bitumen: { name: '역청 반죽', type: 'build', cost: 1, rarity: 'common', desc: '벽돌 +3. 오늘 층 쌓기 비용 -1',
+             play(G) { G.bricks += 3; G.dayCostDown += 1; return '벽돌 +3, 오늘 층 비용 -1'; } },
+  spire:   { name: '첨탑', type: 'build', cost: 2, rarity: 'common', desc: '벽돌을 (층 비용) 내고 층 +2',
+             can(G) { return G.bricks >= floorCost(G); }, why: '벽돌이 모자랍니다',
+             play(G) { const c = floorCost(G); G.bricks -= c; G.floors += 2; return `층 +2 (벽돌 -${c})`; } },
+  found:   { name: '기초 다지기', type: 'build', cost: 1, rarity: 'rare', desc: '이번 판 동안 층 쌓기 비용 영구 -1',
+             play(G) { G.costDown += 1; return '층 비용 영구 -1'; } },
+  last:    { name: '마지막 벽돌', type: 'build', cost: 1, rarity: 'rare', desc: '7일째에만 쓸 수 있다. 층 +4',
+             can(G) { return G.day === MAX_DAY; }, why: '7일째에만 쓸 수 있습니다',
+             play(G) { G.floors += 4; return '층 +4'; } },
+
+  // ── 인력 ──
+  overseer: { name: '감독관', type: 'labor', cost: 1, rarity: 'common', desc: '일꾼 수 +2 만큼 벽돌',
+              play(G) { const n = G.workers + 2; G.bricks += n; return `벽돌 +${n}`; } },
+  shift:    { name: '교대조', type: 'labor', cost: 1, rarity: 'common', desc: '일꾼 +2. 내일 손패 -1',
+              play(G) { G.workers += 2; G.tired = 1; return '일꾼 +2 (내일 손패 -1)'; } },
+  market:   { name: '인력 시장', type: 'labor', cost: 1, rarity: 'common', desc: '일꾼 +1, 벽돌 +1, 카드 1장 뽑기',
+              play(G) { G.workers += 1; G.bricks += 1; drawCards(G, 1); return '일꾼 +1, 벽돌 +1, 카드 1장'; } },
+
+  // ── 교만 ──
+  sky:    { name: '하늘에 닿으리라', type: 'pride', cost: 2, rarity: 'rare', desc: '벽돌을 (층 비용 ×1.5) 내고 층 +3. 교만 +2',
+            can(G) { return G.bricks >= spireCost(G); }, why: '벽돌이 모자랍니다',
+            play(G) { const c = spireCost(G); G.bricks -= c; G.floors += 3; G.pride += 2; return `층 +3, 교만 +2 (벽돌 -${c})`; } },
+  fame:   { name: '이름을 내자', type: 'pride', cost: 1, rarity: 'common', desc: '교만 +1. 붕괴 때 최종 층 +5% (중첩)',
+            play(G) { G.pride += 1; G.fame += 1; return '교만 +1'; } },
+  vision: { name: '정상의 환영', type: 'pride', cost: 1, rarity: 'common', desc: '교만 ×3 만큼 벽돌',
+            play(G) { const n = G.pride * 3; G.bricks += n; return `벽돌 +${n}`; } },
+
+  // ── 해독 ──
+  interp:    { name: '통역사', type: 'decode', cost: 1, rarity: 'common', desc: '가려진 카드 1장을 해독',
+               play(G) {
+                 const h = G.hand.find(x => x.hidden);
+                 if (h) { decodeId(G, h.id); return `해독: ${CARDS[h.id].name}`; }
+                 const unk = allIds(G).filter(id => !G.decoded.has(id) && CARDS[id].rarity !== 'starter');
+                 if (unk.length) { const id = unk[Math.floor(G.rng() * unk.length)]; decodeId(G, id); return `해독: ${CARDS[id].name}`; }
+                 return '해독할 카드가 없다'; } },
+  lingua:    { name: '공용어', type: 'decode', cost: 2, rarity: 'rare', desc: '오늘 혼란을 걷어낸다. 손패를 전부 해독',
+               play(G) {
+                 G.dayClear = true;
+                 const ids = [...new Set(G.hand.filter(x => x.hidden).map(x => x.id))];
+                 ids.forEach(id => decodeId(G, id));
+                 return ids.length ? `${ids.length}장 해독` : '오늘은 혼란이 없다'; } },
+  collector: { name: '방언 수집가', type: 'decode', cost: 1, rarity: 'common', desc: '해독한 카드 수 ×3 만큼 벽돌',
+               play(G) { const n = G.decoded.size * 3; G.bricks += n; return `벽돌 +${n}`; } },
+  dict:      { name: '바벨의 사전', type: 'decode', cost: 2, rarity: 'rare', desc: '덱의 모든 카드를 해독',
+               play(G) {
+                 const ids = allIds(G).filter(id => !G.decoded.has(id) && CARDS[id].rarity !== 'starter');
+                 ids.forEach(id => decodeId(G, id));
+                 return ids.length ? `${ids.length}장 해독` : '해독할 카드가 없다'; } },
+
+  // ── 혼돈 ──
+  chaos: { name: '알 수 없는 말', type: 'chaos', cost: 1, rarity: 'common', desc: '벽돌 +2. 혼란 단계마다 +2',
+           play(G) { const n = 2 + 2 * confusionLevel(G); G.bricks += n; return `벽돌 +${n}`; } },
+};
+
+const GLYPHS = [...'ㄱㄴㄷㄹㅁㅂㅅㅇㅈㅊㅋㅌㅍㅎㅏㅑㅓㅕㅗㅛㅜㅠㅡㅣ◈◇▣※✦'];
+function hashStr(s) {
+  let h = 2166136261;
+  for (const ch of s) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619); }
+  return h >>> 0;
+}
+// 같은 카드는 한 판 동안 같은 글자로 가려진다 → 기억하면 알아볼 수 있음
+function scramble(G, id, text) {
+  const r = mulberry32((G.seed ^ hashStr(id)) >>> 0);
+  return [...text].map(ch => ch === ' ' ? ' ' : GLYPHS[Math.floor(r() * GLYPHS.length)]).join('');
+}
+
+function newInst(G, id) { return { uid: ++G.uid, id, hidden: false }; }
+
+function createRun(seed) {
+  const G = {
+    seed, rng: mulberry32(seed), uid: 0,
+    day: 0, energy: ENERGY, bricks: START_BRICKS, workers: 1, floors: 0,
+    pride: 0, fame: 0, costDown: 0, dayCostDown: 0, tired: 0,
+    levelBonus: 0, nextBonus: 0, dayClear: false,
+    played: new Set(), decoded: new Set(),
+    draw: [], hand: [], discard: [], over: false,
+  };
+  const start = [['mud', 4], ['stack', 3], ['hire', 1]];
+  const list = [];
+  for (const [id, n] of start) for (let i = 0; i < n; i++) list.push(newInst(G, id));
+  G.draw = shuffle(list, G.rng);
+  return G;
+}
+
+// 가려질 확률: 시작 카드·해독한 카드는 0, 써 본 카드는 덜, 처음 보는 카드는 단계 그대로
+function hideChance(G, id, lvl) {
+  const def = CARDS[id];
+  if (def.rarity === 'starter' || G.decoded.has(id)) return 0;
+  const l = lvl === undefined ? confusionLevel(G) : lvl;
+  return HIDE_P[l] * (G.played.has(id) ? PLAYED_HIDE_MULT : 1);
+}
+function computeHidden(G, inst) {
+  if (G.dayClear) return false;
+  return G.rng() < hideChance(G, inst.id);
+}
+
+function drawCards(G, n) {
+  for (let i = 0; i < n; i++) {
+    if (!G.draw.length) {
+      if (!G.discard.length) break;
+      G.draw = shuffle(G.discard, G.rng);
+      G.discard = [];
+    }
+    const inst = G.draw.pop();
+    inst.hidden = computeHidden(G, inst);
+    G.hand.push(inst);
+  }
+}
+
+function startDay(G) {
+  G.day += 1;
+  G.energy = ENERGY;
+  G.dayCostDown = 0;
+  G.dayClear = false;
+  G.levelBonus = G.nextBonus || 0;
+  G.nextBonus = 0;
+  const size = Math.max(1, HAND_SIZE - G.tired);
+  G.tired = 0;
+  G.hand = [];
+  drawCards(G, size);
+}
+
+function canPlay(G, inst) {
+  const c = CARDS[inst.id];
+  if (c.cost > G.energy) return false;
+  if (c.can && !c.can(G)) return false;
+  return true;
+}
+function whyNot(G, inst) {
+  const c = CARDS[inst.id];
+  if (c.cost > G.energy) return '에너지가 모자랍니다';
+  if (c.can && !c.can(G)) return inst.hidden ? '지금은 쓸 수 없습니다' : (c.why || '지금은 쓸 수 없습니다');
+  return '';
+}
+
+function playCard(G, inst) {
+  if (!canPlay(G, inst)) return { ok: false };
+  const c = CARDS[inst.id];
+  const wasHidden = inst.hidden;
+  G.energy -= c.cost;
+  G.hand = G.hand.filter(x => x !== inst);
+  G.played.add(inst.id);
+  if (wasHidden) decodeId(G, inst.id);
+  const msg = c.play(G, inst);
+  G.discard.push(inst);
+  return { ok: true, msg, wasHidden };
+}
+
+function endDay(G) {
+  const production = G.workers;
+  G.bricks += production;
+  const prideRise = G.pride >= 5;
+  G.nextBonus = prideRise ? 1 : 0;
+  G.pride = Math.max(0, G.pride - 1);
+  G.discard.push(...G.hand);
+  G.hand = [];
+  if (G.day >= MAX_DAY) G.over = true;
+  return { production, prideRise };
+}
+
+function makeRewards(G) {
+  const nextDay = Math.min(G.day + 1, MAX_DAY);
+  const lvl = Math.min(3, BASE_LEVEL[nextDay] + (G.nextBonus || 0));
+  const pool = Object.keys(CARDS).filter(id => CARDS[id].rarity !== 'starter');
+  const picks = [];
+  while (picks.length < 3) {
+    const rare = G.rng() < 0.3;
+    const list = pool.filter(id => (CARDS[id].rarity === 'rare') === rare && !picks.includes(id));
+    if (!list.length) continue;
+    picks.push(list[Math.floor(G.rng() * list.length)]);
+  }
+  return picks.map(id => {
+    return { id, hidden: G.rng() < hideChance(G, id, lvl) };
+  });
+}
+function pickReward(G, r) {
+  if (!r) { G.bricks += SKIP_BRICKS; return; }
+  const inst = newInst(G, r.id);
+  G.draw.splice(Math.floor(G.rng() * (G.draw.length + 1)), 0, inst);
+}
+
+function collapseResult(G) {
+  const bonusFloors = Math.floor(G.floors * 0.05 * G.fame);
+  const floors = G.floors + bonusFloors;
+  const decoded = G.decoded.size;
+  return { floors, baseFloors: G.floors, bonusFloors, decoded, score: floors * 100 + decoded * DECODE_SCORE };
+}
+/*LOGIC_END*/
+
+// ════════════════════════════════════════════════════════════
+//  화면 (Phaser)
+// ════════════════════════════════════════════════════════════
+const W = 480, H = 800;
+// 선명도: 내부 캔버스를 S배로, 글자는 S배 크게 그린 뒤 1/S로 줄여 카메라 줌과 상쇄
+const DPR = window.devicePixelRatio || 1;
+const S = Math.round(Math.max(1.5, Math.min(3.5, Math.min(window.innerWidth * DPR / W, window.innerHeight * DPR / H))) * 100) / 100;
+const K = 1 / S;
+const FONT = '"Apple SD Gothic Neo","Noto Sans KR","Malgun Gothic",sans-serif';
+const LB_KEY = 'babel-leaderboard-v1', NAME_KEY = 'noah-ark-name';
+const SKY = [0x2b5d8a, 0x3a5a85, 0x5b4a85, 0x7a3355];
+const TOWER_BASE = 408;
+
+const Leaderboard = {
+  load() { try { return JSON.parse(localStorage.getItem(LB_KEY)) || []; } catch (e) { return []; } },
+  add(name, score, floors) {
+    const list = this.load();
+    list.push({ name, score, floors, at: Date.now() });
+    list.sort((a, b) => b.score - a.score || a.at - b.at);
+    const top = list.slice(0, 20);
+    try { localStorage.setItem(LB_KEY, JSON.stringify(top)); } catch (e) {}
+    return top;
+  },
+};
+
+const txt = (scene, x, y, str, size, color, o = {}) => {
+  const style = {
+    fontFamily: FONT, fontSize: Math.round(size * S) + 'px', color: color || '#ffffff',
+    align: o.align || 'center', fontStyle: o.bold ? 'bold' : 'normal', lineSpacing: (o.lineSpacing || 0) * S,
+  };
+  if (o.wrap) style.wordWrap = { width: o.wrap * S, useAdvancedWrap: true };
+  return scene.add.text(x, y, str, style)
+    .setOrigin(o.ox === undefined ? 0.5 : o.ox, o.oy === undefined ? 0.5 : o.oy).setScale(K);
+};
+const emo = (scene, x, y, e, size) =>
+  scene.add.text(x, y, e, { fontFamily: FONT, fontSize: Math.round(size * S) + 'px' })
+    .setOrigin(0.5).setPadding(4, 4, 4, 4).setScale(K);
+
+class Main extends Phaser.Scene {
+  constructor() { super('main'); }
+
+  create() {
+    this.cameras.main.setZoom(S);
+    this.cameras.main.centerOn(W / 2, H / 2);
+    this.state = 'menu';
+    this.G = null;
+    this.sel = -1;
+    this.busy = false;
+    this.cardViews = [];
+    this.detailObjs = [];
+    this.floorRects = [];
+    this.glyphs = [];
+    this.ac = null;
+    this.level = 0;
+    this.buildScene();
+    this.input.on('pointerdown', () => this.initAudio());
+    this.ui = this.add.container(0, 0).setDepth(100);
+    this.showMenu();
+  }
+
+  // ═════════════ 고정 화면 ═════════════
+  buildScene() {
+    this.add.rectangle(W / 2, H / 2, W, H, 0x0b1220);
+    this.sky = this.add.rectangle(W / 2, 258, W, 324, SKY[0]).setDepth(1);
+    this.add.rectangle(W / 2, 426, W, 40, 0x4b3b2a).setDepth(2);           // 땅
+    this.add.rectangle(W / 2, 622, W, 355, 0x101a2c).setDepth(1);          // 하단 패널
+    this.add.rectangle(W / 2, 48, W, 96, 0x0a1220).setDepth(30);           // HUD
+
+    // HUD
+    this.dayText = txt(this, 14, 16, '', 20, '#ffe6a8', { ox: 0, bold: true }).setDepth(31);
+    txt(this, W / 2 + 6, 14, '언어 혼란', 12, '#9fb3c8').setDepth(31);
+    this.pips = [0, 1, 2].map(i => this.add.rectangle(W / 2 - 18 + i * 24 + 6, 32, 20, 8, 0x334155).setDepth(31));
+    this.floorText = txt(this, W - 14, 22, '0층', 28, '#ffffff', { ox: 1, bold: true }).setDepth(31);
+    this.energyDots = [0, 1, 2].map(i => this.add.circle(22 + i * 24, 62, 8, 0xfacc15).setDepth(31));
+    this.resText = txt(this, 100, 62, '', 17, '#ffffff', { ox: 0, bold: true }).setDepth(31);
+    this.doomText = txt(this, W - 14, 62, '', 14, '#ff8a8a', { ox: 1, bold: true }).setDepth(31);
+    this.hintText = txt(this, 14, 84, '', 12, '#9fb3c8', { ox: 0 }).setDepth(31);
+
+    // 탑 위 표시
+    this.flag = emo(this, W / 2, TOWER_BASE - 20, '🚩', 22).setDepth(6);
+    this.costText = txt(this, W - 14, 118, '', 13, '#e5edf7', { ox: 1 }).setDepth(7);
+    this.skyLabel = txt(this, 14, 112, '하늘 ☁', 13, '#dbeafe', { ox: 0 }).setDepth(7);
+
+    // 하단
+    this.pileText = txt(this, 14, 686, '', 12, '#7b8ba3', { ox: 0 }).setDepth(41);
+    this.endBg = this.add.rectangle(W / 2, 742, 230, 54, 0xe0b04a).setDepth(41).setInteractive({ useHandCursor: true });
+    this.endBg.on('pointerdown', () => this.onEndDay());
+    this.endLabel = txt(this, W / 2, 742, '하루 끝내기 ▶', 22, '#2b1a05', { bold: true }).setDepth(42);
+  }
+
+  setAtmosphere(level) {
+    this.level = level;
+    this.sky.setFillStyle(SKY[level]);
+    this.glyphs.forEach(g => g.destroy());
+    this.glyphs = [];
+    const GL = [...'ㄱㅁㅂㅅㅇㅈㅎㅏㅓㅗㅜ◈◇※✦'];
+    for (let i = 0; i < level * 6; i++) {
+      const g = txt(this, 20 + Math.random() * 440, 130 + Math.random() * 250, GL[Math.floor(Math.random() * GL.length)], 20 + Math.random() * 16, '#e9d5ff')
+        .setDepth(4).setAlpha(0.25);
+      this.tweens.add({ targets: g, y: g.y - 40 - Math.random() * 40, alpha: 0.05, duration: 2200 + Math.random() * 2000, yoyo: true, repeat: -1 });
+      this.glyphs.push(g);
+    }
+  }
+
+  // ═════════════ HUD / 탑 ═════════════
+  refreshHud() {
+    const G = this.G;
+    if (!G) return;
+    const lvl = confusionLevel(G);
+    this.dayText.setText(`${Math.max(1, G.day)}일째 / ${MAX_DAY}`);
+    this.pips.forEach((p, i) => p.setFillStyle(i < lvl ? [0xfacc15, 0xfb923c, 0xef4444][i] : 0x334155));
+    this.floorText.setText(`${G.floors}층`);
+    this.energyDots.forEach((d, i) => d.setFillStyle(i < G.energy ? 0xfacc15 : 0x334155));
+    this.resText.setText(`🧱 ${G.bricks}    👷 ${G.workers}    👑 ${G.pride}`);
+    const left = MAX_DAY - G.day;
+    this.doomText.setText(left > 0 ? `심판까지 ${left}일` : '오늘 밤, 탑이 무너진다');
+    this.hintText.setText(`다음 층 🧱 ${floorCost(G)}  ·  저녁에 벽돌 +${G.workers}`);
+    this.costText.setText(`교만 5↑ → 내일 혼란 +1`);
+  }
+
+  redrawTower(popNew) {
+    const G = this.G, n = G.floors;
+    while (this.floorRects.length > n) this.floorRects.pop().destroy();
+    const th = Math.min(20, 270 / Math.max(n, 13));
+    for (let i = 0; i < n; i++) {
+      const w = Math.max(56, 150 - i * 3), y = TOWER_BASE - (i + 0.5) * th;
+      let r = this.floorRects[i];
+      const isNew = !r;
+      if (!r) {
+        r = this.add.rectangle(W / 2, y, w, th - 1, i % 2 ? 0xb9824a : 0xa06a38).setDepth(5).setStrokeStyle(1, 0x6b4423);
+        this.floorRects[i] = r;
+      }
+      r.setPosition(W / 2, y);
+      r.setSize(w, th - 1);
+      if (isNew && popNew) {
+        r.setScale(0.4, 0.4);
+        this.tweens.add({ targets: r, scaleX: 1, scaleY: 1, duration: 220, ease: 'Back.Out' });
+      }
+    }
+    this.flag.setPosition(W / 2, TOWER_BASE - n * th - 14);
+  }
+
+  // ═════════════ 손패 / 상세 ═════════════
+  makeCard(inst, w, h, withDesc) {
+    const G = this.G, def = CARDS[inst.id], T = TYPES[def.type], hidden = inst.hidden;
+    const c = this.add.container(0, 0);
+    const bg = this.add.rectangle(0, 0, w, h, hidden ? 0x261b3d : 0x172033).setStrokeStyle(2, T.color);
+    const strip = this.add.rectangle(0, -h / 2 + 13, w - 4, 22, T.color);
+    const cost = this.add.circle(-w / 2 + 15, -h / 2 + 13, 12, 0x0b1220).setStrokeStyle(2, 0xfacc15);
+    const costT = txt(this, -w / 2 + 15, -h / 2 + 13, String(def.cost), 15, '#fde047', { bold: true });
+    const label = txt(this, w / 2 - 8, -h / 2 + 13, T.label, 11, '#ffffff', { ox: 1, bold: true });
+    const icon = emo(this, 0, withDesc ? -h / 2 + 52 : -10, T.icon, withDesc ? 38 : 32);
+    const name = hidden ? scramble(G, inst.id, def.name) : def.name;
+    const nameT = txt(this, 0, withDesc ? -h / 2 + 96 : h / 2 - 36, name, withDesc ? 16 : 14, hidden ? '#d8b4fe' : '#ffffff', { bold: true, wrap: w - 10 });
+    c.add([bg, strip, cost, costT, label, icon, nameT]);
+    if (withDesc) {
+      const d = hidden ? scramble(G, inst.id, def.desc) : def.desc;
+      c.add(txt(this, 0, -h / 2 + 128, d, 13, hidden ? '#c4b5fd' : '#cbd5e1', { wrap: w - 18, oy: 0, lineSpacing: 2 }));
+    }
+    c.bg = bg;
+    return c;
+  }
+
+  renderHand() {
+    this.cardViews.forEach(v => v.destroy());
+    this.cardViews = [];
+    const G = this.G, hand = G.hand, n = hand.length;
+    const cw = 88, ch = 146;
+    const gap = n > 1 ? Math.min(cw + 5, (W - 20 - cw) / (n - 1)) : 0;
+    const x0 = (W - (cw + (n - 1) * gap)) / 2 + cw / 2;
+    hand.forEach((inst, i) => {
+      const v = this.makeCard(inst, cw, ch, false);
+      const sel = i === this.sel;
+      v.setPosition(x0 + i * gap, 592 - (sel ? 18 : 0));
+      v.setDepth(sel ? 60 : 40 + i);
+      const ok = canPlay(G, inst) || (inst.hidden && CARDS[inst.id].cost <= G.energy);
+      v.setAlpha(ok ? 1 : 0.5);
+      if (sel) v.bg.setStrokeStyle(3, 0xffffff);
+      v.bg.setInteractive({ useHandCursor: true });
+      v.bg.on('pointerdown', () => this.onCardTap(i));
+      this.cardViews.push(v);
+    });
+    this.pileText.setText(`뽑을 카드 ${G.draw.length}  ·  버린 카드 ${G.discard.length}`);
+    this.renderDetail();
+  }
+
+  renderDetail() {
+    this.detailObjs.forEach(o => o.destroy());
+    this.detailObjs = [];
+    const G = this.G, add = (o) => { o.setDepth(36); this.detailObjs.push(o); return o; };
+    add(this.add.rectangle(W / 2, 466, W - 20, 70, 0x1b2740).setStrokeStyle(1, 0x334155));
+    const inst = G.hand[this.sel];
+    if (!inst) {
+      add(txt(this, W / 2, 466, '카드를 눌러 확인 · 한 번 더 누르면 사용', 15, '#8fa3bd'));
+      return;
+    }
+    const def = CARDS[inst.id], T = TYPES[def.type];
+    const name = inst.hidden ? scramble(G, inst.id, def.name) : def.name;
+    const desc = inst.hidden ? scramble(G, inst.id, def.desc) : def.desc;
+    add(txt(this, 26, 444, `${T.icon} ${name}`, 17, inst.hidden ? '#d8b4fe' : '#ffffff', { ox: 0, bold: true }));
+    add(txt(this, 26, 468, desc, 13, inst.hidden ? '#c4b5fd' : '#cbd5e1', { ox: 0, oy: 0, wrap: 300 }));
+    const ok = canPlay(G, inst);
+    const btn = add(this.add.rectangle(414, 466, 86, 46, ok ? 0xe0b04a : 0x475569).setInteractive({ useHandCursor: true }));
+    btn.on('pointerdown', () => this.playSelected());
+    add(txt(this, 414, 466, ok ? '사용' : '불가', 18, ok ? '#2b1a05' : '#cbd5e1', { bold: true }));
+    if (inst.hidden) add(txt(this, W - 20, 442, '가려진 말', 11, '#c4b5fd', { ox: 1 }));
+  }
+
+  onCardTap(i) {
+    if (this.busy || this.state !== 'play') return;
+    if (this.sel === i) { this.playSelected(); return; }
+    this.sel = i;
+    this.renderHand();
+    this.sfx(520, 0.04, 'triangle', 0.04);
+  }
+
+  playSelected() {
+    if (this.busy || this.state !== 'play') return;
+    const G = this.G, inst = G.hand[this.sel];
+    if (!inst) return;
+    const before = G.floors;
+    const r = playCard(G, inst);
+    if (!r.ok) {
+      this.toast(whyNot(G, inst) || '쓸 수 없습니다', '#fca5a5');
+      this.sfx(140, 0.12, 'sawtooth', 0.05);
+      return;
+    }
+    this.sel = -1;
+    this.toast(r.msg, '#fde68a');
+    if (r.wasHidden) this.time.delayedCall(350, () => this.toast('해독!  말이 이해되기 시작한다', '#86efac', 330));
+    this.renderHand();
+    this.redrawTower(true);
+    this.refreshHud();
+    if (G.floors > before) { this.cameras.main.shake(90, 0.003); this.sfx(300 + G.floors * 25, 0.12, 'sine', 0.08); }
+    else this.sfx(400, 0.08, 'triangle', 0.06);
+  }
+
+  // ═════════════ 하루 흐름 ═════════════
+  startRun() {
+    this.floorRects.forEach(r => r.destroy());
+    this.floorRects = [];
+    this.G = createRun((Math.random() * 0x7fffffff) | 0);
+    this.startDayFlow();
+  }
+
+  startDayFlow() {
+    const G = this.G;
+    startDay(G);
+    this.sel = -1;
+    this.busy = true;
+    this.state = 'intro';
+    this.setAtmosphere(confusionLevel(G));
+    this.refreshHud();
+    this.redrawTower(false);
+    this.renderHand();
+    this.showIntro();
+  }
+
+  showIntro() {
+    const G = this.G, lvl = confusionLevel(G);
+    const LINES = [
+      '온 땅의 말이 하나였던 때.\n모든 카드가 또렷하게 읽힌다.',
+      '말이 조금씩 어긋나기 시작한다.\n해독하지 못한 카드 일부가 흐려진다.',
+      '서로의 말이 점점 들리지 않는다.\n해독하지 못한 카드 대부분이 흐려진다.',
+      '아무도 서로를 알아듣지 못한다.\n해독하지 못한 카드는 거의 모두 흐려진다.',
+    ];
+    this.clearUI();
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.62).setInteractive();
+    dim.on('pointerdown', () => this.endIntro());
+    this.ui.add(dim);
+    this.ui.add(txt(this, W / 2, 230, `${G.day}일째 아침`, 44, '#ffe6a8', { bold: true }));
+    this.ui.add(txt(this, W / 2, 300, `언어 혼란 ${lvl}단계`, 24, ['#9fb3c8', '#facc15', '#fb923c', '#f87171'][lvl], { bold: true }));
+    this.ui.add(txt(this, W / 2, 370, LINES[lvl], 17, '#e5edf7', { lineSpacing: 8 }));
+    if (G.levelBonus) this.ui.add(txt(this, W / 2, 440, '👑 교만이 말을 더 흩어놓았다 (+1단계)', 15, '#d8b4fe'));
+    this.ui.add(txt(this, W / 2, 500, G.day >= MAX_DAY ? '오늘 밤, 탑은 무너진다' : `심판까지 ${MAX_DAY - G.day}일`, 20, '#ff8a8a', { bold: true }));
+    this.ui.add(txt(this, W / 2, 600, '화면을 눌러 시작', 16, '#8fa3bd'));
+  }
+  endIntro() {
+    if (this.state !== 'intro') return;
+    this.clearUI();
+    this.state = 'play';
+    this.busy = false;
+    this.initAudio();
+  }
+
+  onEndDay() {
+    if (this.busy || this.state !== 'play') return;
+    this.busy = true;
+    this.sel = -1;
+    const G = this.G;
+    const r = endDay(G);
+    this.renderHand();
+    this.refreshHud();
+    this.toast(`일꾼이 벽돌 ${r.production}개를 쌓았다`, '#fde68a');
+    if (r.prideRise) this.time.delayedCall(500, () => this.toast('교만이 하늘에 닿았다… 내일 말이 더 흩어진다', '#d8b4fe', 330));
+    this.sfx(240, 0.2, 'sine', 0.07);
+    this.time.delayedCall(1300, () => { if (G.over) this.collapse(); else this.showReward(); });
+  }
+
+  // ═════════════ 보상 ═════════════
+  showReward() {
+    const G = this.G;
+    this.state = 'reward';
+    this.rewards = makeRewards(G);
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.78).setInteractive());
+    this.ui.add(txt(this, W / 2, 96, `${G.day}일째 저녁`, 22, '#ffe6a8', { bold: true }));
+    this.ui.add(txt(this, W / 2, 130, '덱에 넣을 카드를 하나 고르세요', 17, '#e5edf7'));
+    const nextLvl = Math.min(3, BASE_LEVEL[Math.min(G.day + 1, MAX_DAY)] + (G.nextBonus || 0));
+    this.ui.add(txt(this, W / 2, 160, `내일의 언어 혼란 ${nextLvl}단계 — 흐린 카드는 정체를 모른 채 고르게 됩니다`, 12, '#9fb3c8'));
+    this.rewards.forEach((r, i) => {
+      const v = this.makeCard({ id: r.id, hidden: r.hidden }, 136, 232, true);
+      v.setPosition(78 + i * 162, 330);
+      v.bg.setInteractive({ useHandCursor: true });
+      v.bg.on('pointerdown', () => this.chooseReward(i));
+      this.ui.add(v);
+    });
+    const sb = this.add.rectangle(W / 2, 520, 300, 50, 0x334155).setInteractive({ useHandCursor: true });
+    sb.on('pointerdown', () => this.chooseReward(-1));
+    this.ui.add(sb);
+    this.ui.add(txt(this, W / 2, 520, `건너뛰기 (벽돌 +${SKIP_BRICKS})`, 17, '#e5edf7', { bold: true }));
+    this.ui.add(txt(this, W / 2, 580, `현재 덱 ${G.draw.length + G.discard.length + G.hand.length}장 · 해독한 카드 ${G.decoded.size}장`, 13, '#8fa3bd'));
+  }
+  chooseReward(i) {
+    if (this.state !== 'reward') return;
+    pickReward(this.G, i >= 0 ? this.rewards[i] : null);
+    this.sfx(660, 0.12, 'triangle', 0.08);
+    this.clearUI();
+    this.startDayFlow();
+  }
+
+  // ═════════════ 붕괴 ═════════════
+  collapse() {
+    this.state = 'collapse';
+    const res = collapseResult(this.G);
+    this.res = res;
+    this.toast('하늘이 흔들린다…', '#fecaca', 300);
+    this.cameras.main.shake(1800, 0.006);
+    [196, 165, 131, 98].forEach((f, i) => this.time.delayedCall(i * 350, () => this.sfx(f, 0.4, 'sawtooth', 0.08)));
+    const n = this.floorRects.length;
+    this.floorRects.forEach((r, i) => {
+      this.tweens.add({
+        targets: r, x: r.x + (Math.random() - 0.5) * 280, y: 470, angle: (Math.random() - 0.5) * 200, alpha: 0,
+        duration: 1100 + Math.random() * 700, delay: 700 + (n - 1 - i) * 70, ease: 'Quad.In',
+      });
+    });
+    this.tweens.add({ targets: this.flag, y: 470, alpha: 0, duration: 900, delay: 600 });
+    this.time.delayedCall(700 + n * 70 + 2000, () => this.showResult());
+  }
+
+  showResult() {
+    const res = this.res;
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.82).setInteractive());
+    this.ui.add(txt(this, W / 2, 130, '탑이 무너졌다', 40, '#fecaca', { bold: true }));
+    this.ui.add(txt(this, W / 2, 190, '사람들은 서로의 말을 알아듣지 못한 채\n온 땅으로 흩어졌다', 15, '#cbd5e1', { lineSpacing: 6 }));
+    const lines = [
+      `쌓은 층   ${res.baseFloors}층` + (res.bonusFloors ? `  (+${res.bonusFloors} 이름의 보너스)` : ''),
+      `해독한 카드   ${res.decoded}장`,
+    ];
+    this.ui.add(txt(this, W / 2, 290, lines.join('\n'), 20, '#e5edf7', { lineSpacing: 10 }));
+    this.ui.add(txt(this, W / 2, 400, `${res.score}점`, 54, '#ffe6a8', { bold: true }));
+    this.ui.add(txt(this, W / 2, 450, `층 ${res.floors} × 100  +  해독 ${res.decoded} × ${DECODE_SCORE}`, 14, '#8fa3bd'));
+    this.time.delayedCall(1400, () => this.askName());
+  }
+
+  askName() {
+    const res = this.res;
+    let saved = '';
+    try { saved = localStorage.getItem(NAME_KEY) || ''; } catch (e) {}
+    let name = null;
+    if (res.score > 0) name = window.prompt('리더보드에 등록할 이름 (최대 8자, 취소하면 등록 안 함)', saved);
+    if (name && name.trim()) {
+      name = name.trim().slice(0, 8);
+      try { localStorage.setItem(NAME_KEY, name); } catch (e) {}
+      Leaderboard.add(name, res.score, res.floors);
+    }
+    this.clearUI();
+    this.state = 'over';
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x000000, 0.86).setInteractive());
+    this.ui.add(txt(this, W / 2, 110, '탑이 무너졌다', 32, '#fecaca', { bold: true }));
+    this.ui.add(txt(this, W / 2, 170, `${res.score}점  (${res.floors}층)`, 36, '#ffe6a8', { bold: true }));
+    this.boardList(250, 8);
+    this.button('다시 하기', W / 2, 650, () => this.startRun());
+  }
+
+  // ═════════════ 메뉴 / UI 공통 ═════════════
+  clearUI() { this.ui.removeAll(true); }
+
+  button(label, x, y, cb, w = 250) {
+    const bg = this.add.rectangle(x, y, w, 60, 0xe0b04a).setInteractive({ useHandCursor: true });
+    bg.on('pointerdown', cb);
+    this.ui.add([bg, txt(this, x, y, label, 26, '#2b1a05', { bold: true })]);
+  }
+
+  boardList(y, n = 5) {
+    const list = Leaderboard.load().slice(0, n);
+    const lines = list.length
+      ? list.map((r, i) => `${i + 1}.  ${r.name}   ${r.score}점 (${r.floors}층)`).join('\n')
+      : '아직 기록이 없습니다';
+    this.ui.add(txt(this, W / 2, y, '🏆 리더보드 (이 기기)', 20, '#ffd966', { bold: true }));
+    this.ui.add(txt(this, W / 2, y + 28, lines, 18, '#e8f1fb', { oy: 0, lineSpacing: 6 }));
+  }
+
+  showMenu() {
+    this.state = 'menu';
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x0b1220, 0.9).setInteractive());
+    this.ui.add(txt(this, W / 2, 130, '바벨', 64, '#ffe6a8', { bold: true }));
+    this.ui.add(txt(this, W / 2, 195, '언어가 흩어지기 전에, 하늘까지', 20, '#bfe3ff'));
+    this.ui.add(txt(this, W / 2, 340,
+      '🏗️  7일 안에 탑을 높이 쌓으세요.\n     7일째 저녁, 탑은 반드시 무너집니다\n\n' +
+      '🃏  카드로 벽돌을 모으고 층을 쌓습니다 (하루 에너지 3)\n\n' +
+      '🗣️  날이 갈수록 말이 흩어져 카드가 가려집니다 (같은 카드는 늘 같은 글자)\n     가려진 채 쓰거나 통역하면 완전히 해독되어 다시는 가려지지 않습니다\n\n' +
+      '🏆  점수 = 층 × 100 + 해독한 카드 × ' + DECODE_SCORE,
+      15, '#e8f1fb', { lineSpacing: 5, ox: 0.5 }));
+    this.button('시작', W / 2, 520, () => this.startRun());
+    this.boardList(595, 4);
+    this.ui.add(txt(this, W / 2, 790, `build b1 · 해상도 ×${S}`, 11, '#475569'));
+  }
+
+  // ═════════════ 효과 ═════════════
+  toast(str, color, y = 392) {
+    const t = txt(this, W / 2, y, str, 19, color || '#ffffff', { bold: true }).setDepth(70);
+    this.tweens.add({ targets: t, y: y - 36, alpha: 0, duration: 1100, delay: 250, onComplete: () => t.destroy() });
+  }
+
+  initAudio() {
+    if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); return; }
+    try { const C = window.AudioContext || window.webkitAudioContext; if (C) this.ac = new C(); } catch (e) { this.ac = null; }
+  }
+  sfx(freq, dur, type = 'sine', vol = 0.08) {
+    if (!this.ac) return;
+    try {
+      const t0 = this.ac.currentTime, o = this.ac.createOscillator(), g = this.ac.createGain();
+      o.type = type; o.frequency.setValueAtTime(freq, t0);
+      o.frequency.exponentialRampToValueAtTime(freq * 1.4, t0 + dur * 0.6);
+      g.gain.setValueAtTime(vol, t0);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g); g.connect(this.ac.destination);
+      o.start(t0); o.stop(t0 + dur + 0.02);
+    } catch (e) {}
+  }
+}
+
+new Phaser.Game({
+  type: Phaser.AUTO,
+  parent: 'game',
+  width: W * S,
+  height: H * S,
+  backgroundColor: '#0b1220',
+  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+  scene: Main,
+});
+</script>
+</body>
+</html>
