@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>방이 없습니다 — 베들레헴 여관</title>
+<meta name="description" content="호적 등록으로 붐비는 베들레헴. 여관 주인이 되어 손님 가족을 방에 들이세요. 누가복음 2장 모티브의 로그라이크 퍼즐.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@400;700&family=Noto+Sans+KR:wght@400;700&display=swap">
+<style>
+  html, body { margin: 0; height: 100%; background: #140e0a; overflow: hidden; touch-action: none; user-select: none; -webkit-user-select: none; }
+  #game { width: 100%; height: 100%; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/phaser@4.2.1/dist/phaser.min.js"></script>
+</head>
+<body>
+<div id="game"></div>
+<script>
+// ════════════════════════════════════════════════════════════
+//  방이 없습니다 — 베들레헴 여관 로그라이크 퍼즐
+//  손님 가족(블록)을 8×8 여관에 들이고, 가득 찬 줄을 비워 숙박비를 번다.
+//  밤마다 목표 숙박비를 채우면 방문자(유물)와 개조를 고른다. 8밤을 버티면 끝.
+//  그래픽은 전부 코드로 그린다 (이미지·이모지 없음).
+// ════════════════════════════════════════════════════════════
+
+/*LOGIC_START*/
+const N = 8, NIGHTS = 8, COLORS = 5;
+const BASE_GUESTS = 18, BASE_CELL = 5, MAX_VISITORS = 5;
+const TARGETS = [0, 120, 220, 360, 560, 820, 1150, 1600, 2200];   // 인덱스 = 밤
+
+const SHAPES = {
+  mono:  { cells: [[0,0]], w: 4 },
+  duo:   { cells: [[0,0],[0,1]], w: 9 },
+  tri:   { cells: [[0,0],[0,1],[0,2]], w: 9 },
+  corner:{ cells: [[0,0],[1,0],[1,1]], w: 9 },
+  sq:    { cells: [[0,0],[0,1],[1,0],[1,1]], w: 8 },
+  L4:    { cells: [[0,0],[1,0],[2,0],[2,1]], w: 8 },
+  T4:    { cells: [[0,0],[0,1],[0,2],[1,1]], w: 7 },
+  S4:    { cells: [[0,1],[0,2],[1,0],[1,1]], w: 6 },
+  I4:    { cells: [[0,0],[0,1],[0,2],[0,3]], w: 7 },
+  I5:    { cells: [[0,0],[0,1],[0,2],[0,3],[0,4]], w: 3, big: true },
+  bigL:  { cells: [[0,0],[1,0],[2,0],[2,1],[2,2]], w: 3, big: true },
+  sq3:   { cells: [[0,0],[0,1],[0,2],[1,0],[1,1],[1,2],[2,0],[2,1],[2,2]], w: 2, big: true },
+};
+
+// 방문자(판 내내 효과가 남는 카드)
+const VISITORS = {
+  shepherd: { name: '목자',     desc: '두 줄 이상 한꺼번에 비우면 배수 +2' },
+  angel:    { name: '천사',     desc: '밤마다 처음 비우는 줄 점수 ×3' },
+  gold:     { name: '황금',     desc: '줄을 비울 때마다 배수 +1' },
+  frank:    { name: '유향',     desc: '한 가족으로만 채운 줄 보너스가 두 배' },
+  myrrh:    { name: '몰약',     desc: '매일 밤 손님 +3팀' },
+  tax:      { name: '세리',     desc: '밤이 끝날 때 남은 손님 1팀당 +30' },
+  maid:     { name: '하녀',     desc: '손님을 들일 때 칸당 점수 +2' },
+  carpenter:{ name: '목수',     desc: '대기 중인 손님을 눌러 돌릴 수 있다' },
+  lamp:     { name: '등잔지기', desc: '등불 칸이 있는 줄의 배수 +2 더' },
+  donkey:   { name: '나귀',     desc: '대기열이 4칸으로 늘어난다' },
+  star:     { name: '별',       desc: '세로줄을 비우면 칩 ×2' },
+  simeon:   { name: '시므온',   desc: '연달아 줄을 비울 때마다 배수 +1씩 쌓인다' },
+  anna:     { name: '안나',     desc: '세 줄 이상 한꺼번에 비우면 점수 ×2' },
+};
+const RENOS = {
+  lampcell: { name: '등불 칸 달기', desc: '빈 칸 하나에 등불. 그 칸이 든 줄은 배수 +1' },
+  price:    { name: '숙박비 인상', desc: '칸당 칩 +2' },
+  rooms:    { name: '손님 명부 늘리기', desc: '매일 밤 손님 +2팀' },
+  polite:   { name: '큰 가족 사절', desc: '커다란 가족이 덜 온다' },
+};
+
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function pickN(arr, n, rnd) {
+  const a = arr.slice(), out = [];
+  while (out.length < n && a.length) out.push(a.splice(Math.floor(rnd() * a.length), 1)[0]);
+  return out;
+}
+function norm(cells) {
+  const mr = Math.min(...cells.map(c => c[0])), mc = Math.min(...cells.map(c => c[1]));
+  return cells.map(([r, c]) => [r - mr, c - mc]).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+}
+function rotate(cells) { return norm(cells.map(([r, c]) => [c, -r])); }
+function dims(cells) { return [Math.max(...cells.map(c => c[0])) + 1, Math.max(...cells.map(c => c[1])) + 1]; }
+function has(R, id) { return R.visitors.includes(id); }
+function queueSize(R) { return has(R, 'donkey') ? 4 : 3; }
+function guestsPerNight(R) { return BASE_GUESTS + R.extraGuests + (has(R, 'myrrh') ? 3 : 0); }
+function target(R) { return TARGETS[Math.min(R.night, NIGHTS)]; }
+function special(night) {
+  if (night === 3) return { soldiers: 3, text: '로마 병사들이 방 세 칸을 차지했다' };
+  if (night === 6) return { soldiers: 5, text: '로마 병사들이 방 다섯 칸을 차지했다' };
+  if (night === 8) return { soldiers: 2, big: true, text: '호적 마감 전날 밤. 큰 가족이 몰려온다' };
+  return null;
+}
+
+function createRun(seed) {
+  return {
+    seed, rng: mulberry32(seed), night: 0, total: 0, nightScore: 0,
+    board: new Array(N * N).fill(null), lamps: new Set(), queue: [],
+    visitors: [], cellVal: BASE_CELL, extraGuests: 0, polite: 0,
+    spawned: 0, placed: 0, firstClear: false, combo: 0, uid: 0,
+    over: false, won: false, bestClear: 0,
+  };
+}
+function newPiece(R) {
+  const sp = special(R.night);
+  const ids = Object.keys(SHAPES);
+  const ws = ids.map(id => {
+    const s = SHAPES[id];
+    let w = s.w;
+    if (s.big) w = Math.max(0.5, w - R.polite * 1.2) * (sp && sp.big ? 3 : 1) * (1 + R.night * 0.08);
+    return w;
+  });
+  let x = R.rng() * ws.reduce((a, b) => a + b, 0), k = 0;
+  while (x > ws[k]) { x -= ws[k]; k++; }
+  let cells = norm(SHAPES[ids[k]].cells);
+  const rots = Math.floor(R.rng() * 4);
+  for (let i = 0; i < rots; i++) cells = rotate(cells);
+  return { uid: ++R.uid, shape: ids[k], cells, color: Math.floor(R.rng() * COLORS) };
+}
+function refill(R) {
+  while (R.queue.length < queueSize(R) && R.spawned < guestsPerNight(R)) { R.queue.push(newPiece(R)); R.spawned++; }
+}
+function startNight(R) {
+  R.night++;
+  R.nightScore = 0; R.spawned = 0; R.placed = 0; R.firstClear = false; R.combo = 0;
+  R.board = new Array(N * N).fill(null);
+  R.queue = [];
+  const sp = special(R.night);
+  if (sp) {
+    const free = [];
+    for (let i = 0; i < N * N; i++) if (!R.lamps.has(i)) free.push(i);
+    pickN(free, sp.soldiers, R.rng).forEach(i => { R.board[i] = { color: -1, soldier: true }; });
+  }
+  refill(R);
+  return sp;
+}
+function fits(R, cells, r0, c0) {
+  for (const [r, c] of cells) {
+    const rr = r0 + r, cc = c0 + c;
+    if (rr < 0 || cc < 0 || rr >= N || cc >= N || R.board[rr * N + cc]) return false;
+  }
+  return true;
+}
+function fitsAnywhere(R, cells) {
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (fits(R, cells, r, c)) return true;
+  return false;
+}
+function canContinue(R) { return R.queue.some(p => fitsAnywhere(R, p.cells)); }
+function guestsLeft(R) { return guestsPerNight(R) - R.placed; }
+
+// 놓았을 때 비워질 줄 (미리보기용)
+function linesIfPlaced(R, cells, r0, c0) {
+  const b = R.board.slice();
+  for (const [r, c] of cells) b[(r0 + r) * N + c0 + c] = { color: 0 };
+  return fullLines(b);
+}
+function fullLines(b) {
+  const rows = [], cols = [];
+  for (let r = 0; r < N; r++) { let f = true; for (let c = 0; c < N; c++) if (!b[r * N + c]) { f = false; break; } if (f) rows.push(r); }
+  for (let c = 0; c < N; c++) { let f = true; for (let r = 0; r < N; r++) if (!b[r * N + c]) { f = false; break; } if (f) cols.push(c); }
+  return { rows, cols };
+}
+function lineCells(rows, cols) {
+  const s = new Set();
+  rows.forEach(r => { for (let c = 0; c < N; c++) s.add(r * N + c); });
+  cols.forEach(c => { for (let r = 0; r < N; r++) s.add(r * N + c); });
+  return [...s];
+}
+function lineIdx(isRow, k) { const a = []; for (let i = 0; i < N; i++) a.push(isRow ? k * N + i : i * N + k); return a; }
+
+function place(R, qi, r0, c0) {
+  const p = R.queue[qi];
+  if (!p || !fits(R, p.cells, r0, c0)) return { ok: false };
+  const placedIdx = [];
+  for (const [r, c] of p.cells) { const i = (r0 + r) * N + c0 + c; R.board[i] = { color: p.color }; placedIdx.push(i); }
+  R.queue.splice(qi, 1);
+  R.placed++;
+  const placePts = p.cells.length * (1 + (has(R, 'maid') ? 2 : 0));
+  R.nightScore += placePts;
+  const res = { ok: true, placePts, placedIdx, clear: null };
+  const { rows, cols } = fullLines(R.board);
+  const k = rows.length + cols.length;
+  if (k) {
+    const cells = lineCells(rows, cols);
+    let chips = 0;
+    cells.forEach(i => { if (!R.board[i].soldier) chips += R.cellVal; });
+    const notes = [];
+    let mult = k;
+    const lines = rows.map(r => lineIdx(true, r)).concat(cols.map(c => lineIdx(false, c)));
+    let same = 0, lampLines = 0;
+    lines.forEach(L => {
+      const c0 = R.board[L[0]].color;
+      if (c0 >= 0 && L.every(i => R.board[i].color === c0)) same++;
+      if (L.some(i => R.lamps.has(i))) lampLines++;
+    });
+    if (same) { const v = same * (has(R, 'frank') ? 8 : 4); mult += v; notes.push(`한 가족 줄 +${v}`); }
+    if (lampLines) { const v = lampLines * (1 + (has(R, 'lamp') ? 2 : 0)); mult += v; notes.push(`등불 +${v}`); }
+    if (has(R, 'gold')) { mult += 1; notes.push('황금 +1'); }
+    if (has(R, 'shepherd') && k >= 2) { mult += 2; notes.push('목자 +2'); }
+    if (has(R, 'simeon') && R.combo > 0) { mult += R.combo; notes.push(`시므온 +${R.combo}`); }
+    if (has(R, 'star') && cols.length) { chips *= 2; notes.push('별 칩×2'); }
+    let factor = 1;
+    if (has(R, 'angel') && !R.firstClear) { factor *= 3; notes.push('천사 ×3'); }
+    if (has(R, 'anna') && k >= 3) { factor *= 2; notes.push('안나 ×2'); }
+    const gain = chips * mult * factor;
+    R.nightScore += gain;
+    R.firstClear = true;
+    R.combo++;
+    R.bestClear = Math.max(R.bestClear, gain);
+    const removed = cells.map(i => ({ i, color: R.board[i].color, soldier: !!R.board[i].soldier }));
+    cells.forEach(i => { R.board[i] = null; });
+    res.clear = { rows, cols, k, chips, mult, factor, gain, notes, removed };
+  } else R.combo = 0;
+  refill(R);
+  return res;
+}
+function rotateQueued(R, qi) {
+  if (!has(R, 'carpenter') || !R.queue[qi]) return false;
+  R.queue[qi].cells = rotate(R.queue[qi].cells);
+  return true;
+}
+function nightDone(R) { return R.queue.length === 0 || !canContinue(R); }
+function endNight(R) {
+  const left = guestsLeft(R);
+  const taxBonus = has(R, 'tax') ? left * 30 : 0;
+  R.nightScore += taxBonus;
+  const success = R.nightScore >= target(R);
+  R.total += R.nightScore;
+  if (!success) R.over = true;
+  else if (R.night >= NIGHTS) { R.over = true; R.won = true; }
+  return { success, left, taxBonus, score: R.nightScore, target: target(R) };
+}
+function visitorOffers(R) {
+  return pickN(Object.keys(VISITORS).filter(id => !R.visitors.includes(id)), 3, R.rng);
+}
+function takeVisitor(R, id, replaceIdx) {
+  if (!id) return;
+  if (R.visitors.length < MAX_VISITORS) R.visitors.push(id);
+  else if (replaceIdx >= 0) R.visitors[replaceIdx] = id;
+}
+function renoOffers(R) {
+  let ids = Object.keys(RENOS);
+  if (R.lamps.size >= 6) ids = ids.filter(x => x !== 'lampcell');
+  return pickN(ids, 3, R.rng);
+}
+function applyReno(R, id) {
+  if (id === 'lampcell') {
+    const free = [];
+    for (let i = 0; i < N * N; i++) if (!R.lamps.has(i)) free.push(i);
+    const i = free[Math.floor(R.rng() * free.length)];
+    R.lamps.add(i);
+    return i;
+  }
+  if (id === 'price') R.cellVal += 2;
+  if (id === 'rooms') R.extraGuests += 2;
+  if (id === 'polite') R.polite++;
+  return -1;
+}
+/*LOGIC_END*/
+
+// ════════════════════════════════════════════════════════════
+//  화면 (Phaser)
+// ════════════════════════════════════════════════════════════
+const W = 480, H = 800;
+const DPR = window.devicePixelRatio || 1;
+const S = Math.round(Math.max(1.5, Math.min(3.5, Math.min(window.innerWidth * DPR / W, window.innerHeight * DPR / H))) * 100) / 100;
+const K = 1 / S;
+const SERIF = '"Gowun Batang","Noto Serif KR",serif';
+const SANS = '"Noto Sans KR","Apple SD Gothic Neo","Malgun Gothic",sans-serif';
+const LB_KEY = 'no-room-leaderboard-v1', NAME_KEY = 'noah-ark-name';
+const BUILD_TAG = 'v1.0';
+
+const CELL = 52, BX = 32, BY = 170, DRAG_LIFT = 96;
+const TRAY_Y = 690, TRAY_TOP = 606;
+const FAMILY = [0xc65a3e, 0x3f5f9e, 0x77883a, 0xd9a23f, 0x8b4f7f];
+const FAMILY_NAME = ['붉은 줄무늬', '푸른 바둑', '올리브 마름모', '사프란 점박이', '자줏빛 물결'];
+const GOLD = 0xf3c969, INK = 0x140e0a, WOOD = 0x6b4728, WOOD_D = 0x3d2716, FLOOR = 0x241811;
+const ORD = ['', '첫째', '둘째', '셋째', '넷째', '다섯째', '여섯째', '일곱째', '여덟째'];
+const fmt = n => Math.round(n).toLocaleString('ko-KR');
+
+const Leaderboard = {
+  load() { try { return JSON.parse(localStorage.getItem(LB_KEY)) || []; } catch (e) { return []; } },
+  add(name, score, nights, won) {
+    const list = this.load();
+    list.push({ name, score, nights, won, at: Date.now() });
+    list.sort((a, b) => b.score - a.score || a.at - b.at);
+    const top = list.slice(0, 20);
+    try { localStorage.setItem(LB_KEY, JSON.stringify(top)); } catch (e) {}
+    return top;
+  },
+};
+
+const txt = (scene, x, y, str, size, color, o = {}) => {
+  const style = {
+    fontFamily: o.serif ? SERIF : SANS, fontSize: Math.round(size * S) + 'px', color: color || '#f5ead7',
+    align: o.align || 'center', fontStyle: o.bold ? 'bold' : 'normal', lineSpacing: (o.lineSpacing || 0) * S,
+  };
+  if (o.wrap) style.wordWrap = { width: o.wrap * S, useAdvancedWrap: true };
+  return scene.add.text(x, y, str, style)
+    .setOrigin(o.ox === undefined ? 0.5 : o.ox, o.oy === undefined ? 0.5 : o.oy).setScale(K);
+};
+const shade = (c, t) => {   // t>0 밝게, t<0 어둡게
+  let r = c >> 16 & 255, g = c >> 8 & 255, b = c & 255;
+  const f = v => Math.max(0, Math.min(255, Math.round(t > 0 ? v + (255 - v) * t : v * (1 + t))));
+  return (f(r) << 16) | (f(g) << 8) | f(b);
+};
+
+// ── 직물 무늬 타일 ──
+function drawTile(g, x, y, s, color, alpha = 1) {
+  const base = FAMILY[color], m = Math.max(2, s * 0.06);
+  g.fillStyle(shade(base, -0.45), alpha).fillRoundedRect(x + 1, y + 2, s - 2, s - 2, s * 0.16);
+  g.fillStyle(base, alpha).fillRoundedRect(x + 1, y + 1, s - 2, s - 4, s * 0.16);
+  const ix = x + m + 1, iy = y + m + 1, is = s - 2 * m - 2;
+  const pc = shade(base, 0.38), pd = shade(base, -0.25);
+  g.lineStyle(Math.max(1.2, s * 0.05), pc, 0.7 * alpha);
+  if (color === 0) {          // 줄무늬
+    for (let k = 1; k <= 3; k++) { const yy = iy + is * k / 4; g.lineBetween(ix, yy, ix + is, yy); }
+  } else if (color === 1) {   // 바둑
+    const q = is / 4;
+    g.fillStyle(pc, 0.45 * alpha);
+    for (let a = 0; a < 4; a++) for (let b = 0; b < 4; b++) if ((a + b) % 2 === 0) g.fillRect(ix + a * q, iy + b * q, q, q);
+  } else if (color === 2) {   // 마름모
+    const cx = x + s / 2, cy = y + s / 2 - 1, r = is * 0.36;
+    g.fillStyle(pc, 0.6 * alpha).fillPoints([{ x: cx, y: cy - r }, { x: cx + r, y: cy }, { x: cx, y: cy + r }, { x: cx - r, y: cy }], true);
+    g.fillStyle(pd, 0.8 * alpha).fillPoints([{ x: cx, y: cy - r * 0.4 }, { x: cx + r * 0.4, y: cy }, { x: cx, y: cy + r * 0.4 }, { x: cx - r * 0.4, y: cy }], true);
+  } else if (color === 3) {   // 점박이
+    g.fillStyle(pd, 0.75 * alpha);
+    const q = is / 3;
+    for (let a = 0; a < 3; a++) for (let b = 0; b < 3; b++) if ((a + b) % 2 === 0) g.fillCircle(ix + q * (a + 0.5), iy + q * (b + 0.5) - 1, s * 0.07);
+  } else {                    // 물결(갈매기)
+    for (let k = 0; k < 3; k++) {
+      const yy = iy + is * (k + 0.6) / 3.2;
+      g.beginPath(); g.moveTo(ix, yy + is * 0.08); g.lineTo(ix + is / 2, yy - is * 0.08); g.lineTo(ix + is, yy + is * 0.08); g.strokePath();
+    }
+  }
+  g.lineStyle(1, shade(base, 0.55), 0.35 * alpha).strokeRoundedRect(x + 1.5, y + 1.5, s - 3, s - 5, s * 0.15);
+}
+function drawSoldier(g, x, y, s) {
+  g.fillStyle(0x2a2a2e, 1).fillRoundedRect(x + 1, y + 2, s - 2, s - 2, s * 0.12);
+  g.fillStyle(0x55555c, 1).fillRoundedRect(x + 1, y + 1, s - 2, s - 4, s * 0.12);
+  g.lineStyle(Math.max(2, s * 0.06), 0xb33a32, 1);
+  g.lineBetween(x + s * 0.25, y + s * 0.75, x + s * 0.75, y + s * 0.22);
+  g.lineBetween(x + s * 0.25, y + s * 0.22, x + s * 0.75, y + s * 0.75);
+  g.fillStyle(0xb33a32, 1).fillCircle(x + s / 2, y + s * 0.48, s * 0.1);
+}
+function drawFlame(g, cx, cy, s) {
+  g.fillStyle(0xff9a3c, 0.95).fillTriangle(cx - s * 0.45, cy, cx + s * 0.45, cy, cx, cy - s * 1.4);
+  g.fillStyle(0xffe08a, 1).fillTriangle(cx - s * 0.22, cy, cx + s * 0.22, cy, cx, cy - s * 0.8);
+}
+
+// ── 방문자 / 개조 문양 (코드로 그림) ──
+function drawSym(g, id, cx, cy, s, col = GOLD) {
+  const lw = Math.max(2, s * 0.13);
+  g.lineStyle(lw, col, 1); g.fillStyle(col, 1);
+  switch (id) {
+    case 'shepherd':
+      g.lineBetween(cx + s * 0.2, cy + s, cx + s * 0.2, cy - s * 0.35);
+      g.beginPath(); g.arc(cx - s * 0.15, cy - s * 0.35, s * 0.35, 0, Math.PI, true); g.strokePath();
+      break;
+    case 'angel':
+      g.strokeCircle(cx, cy - s * 0.72, s * 0.26);
+      g.fillTriangle(cx - s * 0.1, cy - s * 0.2, cx - s, cy - s * 0.5, cx - s * 0.55, cy + s * 0.6);
+      g.fillTriangle(cx + s * 0.1, cy - s * 0.2, cx + s, cy - s * 0.5, cx + s * 0.55, cy + s * 0.6);
+      g.fillTriangle(cx - s * 0.3, cy + s, cx + s * 0.3, cy + s, cx, cy - s * 0.25);
+      break;
+    case 'gold': case 'price':
+      g.fillCircle(cx, cy, s * 0.8);
+      g.lineStyle(lw * 0.7, INK, 0.5).strokeCircle(cx, cy, s * 0.52);
+      g.fillStyle(INK, 0.5).fillRect(cx - s * 0.1, cy - s * 0.32, s * 0.2, s * 0.64);
+      break;
+    case 'frank':
+      g.fillPoints([{ x: cx - s * 0.6, y: cy - s * 0.05 }, { x: cx + s * 0.6, y: cy - s * 0.05 }, { x: cx + s * 0.4, y: cy + s }, { x: cx - s * 0.4, y: cy + s }], true);
+      g.lineStyle(lw * 0.8, col, 0.8);
+      [-0.25, 0.25].forEach(o => { g.beginPath(); g.moveTo(cx + s * o, cy - s * 0.2); g.lineTo(cx + s * (o + 0.18), cy - s * 0.55); g.lineTo(cx + s * o, cy - s * 0.85); g.strokePath(); });
+      break;
+    case 'myrrh':
+      g.fillEllipse(cx, cy + s * 0.35, s * 1.3, s * 1.2);
+      g.fillRect(cx - s * 0.18, cy - s * 0.65, s * 0.36, s * 0.5);
+      g.fillRect(cx - s * 0.35, cy - s * 0.8, s * 0.7, s * 0.2);
+      break;
+    case 'tax':
+      for (let k = 0; k < 3; k++) g.fillRoundedRect(cx - s * 0.7 + k * s * 0.08, cy + s * 0.55 - k * s * 0.5, s * 1.4, s * 0.38, s * 0.12);
+      break;
+    case 'maid':
+      g.fillRoundedRect(cx - s * 0.5, cy - s * 0.5, s * 0.9, s * 1.4, s * 0.15);
+      g.beginPath(); g.arc(cx + s * 0.45, cy + s * 0.15, s * 0.35, -Math.PI / 2, Math.PI / 2, false); g.strokePath();
+      g.fillTriangle(cx - s * 0.5, cy - s * 0.5, cx - s * 0.9, cy - s * 0.8, cx - s * 0.5, cy - s * 0.1);
+      break;
+    case 'carpenter':
+      g.fillRoundedRect(cx - s * 0.8, cy - s * 0.85, s * 1.6, s * 0.5, s * 0.1);
+      g.fillRect(cx - s * 0.13, cy - s * 0.4, s * 0.26, s * 1.4);
+      break;
+    case 'lamp': case 'lampcell':
+      g.fillEllipse(cx, cy + s * 0.45, s * 1.6, s * 0.7);
+      g.fillTriangle(cx + s * 0.55, cy + s * 0.35, cx + s * 1.0, cy + s * 0.1, cx + s * 0.6, cy + s * 0.6);
+      drawFlame(g, cx + s * 0.85, cy + s * 0.1, s * 0.35);
+      break;
+    case 'donkey':
+      g.lineStyle(lw * 1.6, col, 1);
+      g.beginPath(); g.arc(cx, cy - s * 0.1, s * 0.65, 0.05 * Math.PI, 0.95 * Math.PI, true); g.strokePath();
+      break;
+    case 'star': {
+      const pts = [];
+      for (let k = 0; k < 16; k++) { const r = k % 2 ? s * 0.38 : (k % 4 === 0 ? s * 1.05 : s * 0.72); const a = -Math.PI / 2 + k * Math.PI / 8; pts.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r }); }
+      g.fillPoints(pts, true);
+      break;
+    }
+    case 'simeon':
+      g.fillRect(cx - s * 0.65, cy - s * 0.55, s * 1.3, s * 1.1);
+      g.fillCircle(cx - s * 0.65, cy, s * 0.55); g.fillCircle(cx + s * 0.65, cy, s * 0.55);
+      g.lineStyle(lw * 0.6, INK, 0.5);
+      [-0.2, 0.1, 0.4].forEach(o => g.lineBetween(cx - s * 0.4, cy + s * (o - 0.1), cx + s * 0.4, cy + s * (o - 0.1)));
+      break;
+    case 'anna':
+      g.fillRect(cx - s * 0.22, cy - s * 0.25, s * 0.44, s * 1.25);
+      g.fillRect(cx - s * 0.55, cy + s * 0.9, s * 1.1, s * 0.15);
+      drawFlame(g, cx, cy - s * 0.3, s * 0.4);
+      break;
+    case 'rooms':
+      g.lineStyle(lw, col, 1).strokeRect(cx - s * 0.55, cy - s * 0.3, s * 1.1, s * 1.3);
+      g.beginPath(); g.arc(cx, cy - s * 0.3, s * 0.55, Math.PI, 0, false); g.strokePath();
+      g.fillCircle(cx + s * 0.28, cy + s * 0.4, s * 0.1);
+      break;
+    case 'polite':
+      g.fillRect(cx - s * 0.8, cy - s * 0.8, s * 0.7, s * 0.7); g.fillRect(cx + s * 0.1, cy - s * 0.8, s * 0.7, s * 0.7);
+      g.fillRect(cx - s * 0.8, cy + s * 0.1, s * 0.7, s * 0.7); g.fillRect(cx + s * 0.1, cy + s * 0.1, s * 0.7, s * 0.7);
+      g.lineStyle(lw * 1.2, 0xb33a32, 1).lineBetween(cx - s, cy + s, cx + s, cy - s);
+      break;
+  }
+}
+
+class Main extends Phaser.Scene {
+  constructor() { super('main'); }
+
+  create() {
+    this.cameras.main.setZoom(S);
+    this.cameras.main.centerOn(W / 2, H / 2);
+    this.R = null;
+    this.state = 'menu';
+    this.busy = false;
+    this.drag = null;
+    this.ac = null;
+    this.visZones = [];
+    this.buildScene();
+    this.ui = this.add.container(0, 0).setDepth(100);
+    this.input.on('pointerdown', p => this.onDown(p));
+    this.input.on('pointermove', p => this.onMove(p));
+    this.input.on('pointerup', p => this.onUp(p));
+    this.showMenu();
+  }
+
+  // ═════════════ 고정 배경 ═════════════
+  buildScene() {
+    const g = this.add.graphics().setDepth(0);
+    g.fillGradientStyle(0x0d1630, 0x0d1630, 0x22160f, 0x22160f, 1).fillRect(0, 0, W, H);
+    // 별
+    const rnd = mulberry32(7);
+    for (let i = 0; i < 60; i++) g.fillStyle(0xfff4d6, 0.15 + rnd() * 0.5).fillCircle(rnd() * W, rnd() * 160, 0.6 + rnd() * 1.1);
+    // 판 프레임
+    const fw = N * CELL;
+    g.fillStyle(WOOD_D, 1).fillRoundedRect(BX - 14, BY - 14, fw + 28, fw + 28, 14);
+    g.fillStyle(WOOD, 1).fillRoundedRect(BX - 10, BY - 10, fw + 20, fw + 20, 11);
+    g.lineStyle(1, shade(WOOD, 0.25), 0.6);
+    for (let k = 0; k < 6; k++) g.lineBetween(BX - 6, BY - 8 + k * 2.2 + (k > 2 ? fw + 6 : 0), BX + fw + 6, BY - 8 + k * 2.2 + (k > 2 ? fw + 6 : 0));
+    g.fillStyle(FLOOR, 1).fillRect(BX, BY, fw, fw);
+    // 트레이 판
+    g.fillStyle(0x1b120c, 0.9).fillRoundedRect(10, TRAY_TOP, W - 20, 160, 14);
+    g.lineStyle(1, 0x3a2a1c, 1).strokeRoundedRect(10, TRAY_TOP, W - 20, 160, 14);
+
+    this.gFloor = this.add.graphics().setDepth(2);     // 바닥 칸, 등불
+    this.gBoard = this.add.graphics().setDepth(3);     // 놓인 손님
+    this.gGhost = this.add.graphics().setDepth(4);     // 미리보기
+    this.gHud = this.add.graphics().setDepth(30);
+    this.gVis = this.add.graphics().setDepth(30);
+    this.gTray = this.add.graphics().setDepth(40);
+    this.gDrag = this.add.graphics().setDepth(80);
+
+    this.nightText = txt(this, 18, 24, '', 22, '#f3c969', { ox: 0, bold: true, serif: true }).setDepth(31);
+    this.totalText = txt(this, W - 18, 24, '', 15, '#f5ead7', { ox: 1, bold: true }).setDepth(31);
+    this.barText = txt(this, 20 + 150, 56, '', 13, '#ffffff', { bold: true }).setDepth(32);
+    this.guestText = txt(this, W - 18, 56, '', 13, '#d9c7a8', { ox: 1 }).setDepth(31);
+    this.visNames = [];
+    this.hintText = txt(this, W / 2, 784, '', 12, '#8a7a66').setDepth(41);
+    this.lampFlick = this.add.graphics().setDepth(2);
+    this.tweens.addCounter({ from: 0, to: 1, duration: 1400, yoyo: true, repeat: -1, onUpdate: tw => this.flicker(tw.getValue()) });
+  }
+
+  flicker(v) {
+    const g = this.lampFlick;
+    g.clear();
+    if (!this.R) return;
+    this.R.lamps.forEach(i => {
+      const x = BX + (i % N) * CELL + CELL / 2, y = BY + Math.floor(i / N) * CELL + CELL / 2;
+      g.fillStyle(0xffb347, 0.10 + v * 0.07).fillCircle(x, y, CELL * 0.75);
+    });
+  }
+
+  // ═════════════ 그리기 ═════════════
+  drawFloor() {
+    const g = this.gFloor, R = this.R;
+    g.clear();
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+      const x = BX + c * CELL, y = BY + r * CELL;
+      g.fillStyle((r + c) % 2 ? 0x2b1d14 : 0x261a12, 1).fillRect(x, y, CELL, CELL);
+      g.lineStyle(1, 0x3a2819, 1).strokeRect(x + 0.5, y + 0.5, CELL - 1, CELL - 1);
+      if (R && R.lamps.has(r * N + c)) {
+        g.fillStyle(0xffb347, 0.18).fillRect(x + 2, y + 2, CELL - 4, CELL - 4);
+        g.fillStyle(0x8a5a2b, 1).fillEllipse(x + CELL / 2, y + CELL * 0.72, CELL * 0.38, CELL * 0.14);
+        drawFlame(g, x + CELL / 2, y + CELL * 0.68, CELL * 0.12);
+      }
+    }
+  }
+
+  drawBoard() {
+    const g = this.gBoard, R = this.R;
+    g.clear();
+    for (let i = 0; i < N * N; i++) {
+      const v = R.board[i];
+      if (!v) continue;
+      const x = BX + (i % N) * CELL, y = BY + Math.floor(i / N) * CELL;
+      if (v.soldier) drawSoldier(g, x, y, CELL); else drawTile(g, x, y, CELL, v.color);
+    }
+  }
+
+  refreshHud() {
+    const R = this.R, g = this.gHud;
+    g.clear();
+    this.nightText.setText(`${ORD[R.night]} 밤`);
+    this.totalText.setText(`총 숙박비 ${fmt(R.total + (this.closed ? 0 : R.nightScore))}`);
+    const t = target(R), f = Math.min(1, R.nightScore / t);
+    g.fillStyle(0x000000, 0.45).fillRoundedRect(20, 46, 300, 20, 10);
+    if (f > 0) g.fillStyle(f >= 1 ? 0x6fbf73 : GOLD, 1).fillRoundedRect(20, 46, Math.max(20, 300 * f), 20, 10);
+    g.lineStyle(1, 0x000000, 0.5).strokeRoundedRect(20, 46, 300, 20, 10);
+    this.barText.setText(`오늘 ${fmt(R.nightScore)} / 목표 ${fmt(t)}`).setColor(f >= 1 ? '#0b2a0d' : '#1d1208');
+    this.guestText.setText(`남은 손님 ${guestsLeft(R)}팀`);
+    this.drawVisitors();
+  }
+
+  drawVisitors() {
+    const R = this.R, g = this.gVis;
+    g.clear();
+    this.visNames.forEach(t => t.destroy());
+    this.visZones.forEach(z => z.destroy());
+    this.visNames = []; this.visZones = [];
+    for (let k = 0; k < MAX_VISITORS; k++) {
+      const x = 20 + k * 90, y = 80;
+      const id = R.visitors[k];
+      g.fillStyle(id ? 0x2c1f15 : 0x1a120c, 1).fillRoundedRect(x, y, 82, 64, 9);
+      g.lineStyle(1, id ? 0x8a6a3a : 0x2e2218, 1).strokeRoundedRect(x, y, 82, 64, 9);
+      if (id) {
+        drawSym(g, id, x + 41, y + 25, 13);
+        this.visNames.push(txt(this, x + 41, y + 52, VISITORS[id].name, 11, '#e9d8b8', { bold: true }).setDepth(31));
+        const z = this.add.rectangle(x + 41, y + 32, 82, 64, 0x000000, 0.001).setDepth(33).setInteractive();
+        z.on('pointerdown', () => { if (this.state === 'play') this.toast(`${VISITORS[id].name} — ${VISITORS[id].desc}`, '#f3c969', 400, 15); });
+        this.visZones.push(z);
+      } else this.visNames.push(txt(this, x + 41, y + 32, '빈 자리', 10, '#4a3a2a').setDepth(31));
+    }
+  }
+
+  slotX(k) { const n = queueSize(this.R); return 10 + (W - 20) * (k + 0.5) / n; }
+
+  drawTray() {
+    const g = this.gTray, R = this.R;
+    g.clear();
+    const n = queueSize(R), cs = n > 3 ? 20 : 24;
+    for (let k = 0; k < n; k++) {
+      const p = R.queue[k];
+      if (!p || (this.drag && this.drag.qi === k)) continue;
+      const [h, w] = dims(p.cells);
+      const ok = fitsAnywhere(R, p.cells);
+      const x0 = this.slotX(k) - w * cs / 2, y0 = TRAY_Y - h * cs / 2;
+      p.cells.forEach(([r, c]) => drawTile(g, x0 + c * cs, y0 + r * cs, cs, p.color, ok ? 1 : 0.3));
+    }
+    const left = guestsPerNight(R) - R.spawned;
+    this.hintText.setText(`끌어서 방에 놓기${has(R, 'carpenter') ? ' · 눌러서 돌리기' : ''}  ·  대기 중이 아닌 손님 ${left}팀`);
+  }
+
+  // ═════════════ 입력 ═════════════
+  toWorld(p) { return { x: p.x / S, y: p.y / S }; }
+
+  onDown(p) {
+    this.initAudio();
+    if (this.state !== 'play' || this.busy) return;
+    const { x, y } = this.toWorld(p);
+    if (y < TRAY_TOP || y > TRAY_TOP + 160) return;
+    const n = queueSize(this.R), k = Math.floor((x - 10) / ((W - 20) / n));
+    if (k < 0 || k >= n || !this.R.queue[k]) return;
+    this.drag = { qi: k, sx: x, sy: y, x, y, moved: false, t: this.time.now };
+    this.sfx(520, 0.04, 'triangle', 0.03);
+    this.updateDrag();
+  }
+  onMove(p) {
+    if (!this.drag) return;
+    const { x, y } = this.toWorld(p);
+    this.drag.x = x; this.drag.y = y;
+    if (Math.abs(x - this.drag.sx) + Math.abs(y - this.drag.sy) > 10) this.drag.moved = true;
+    this.updateDrag();
+  }
+  onUp(p) {
+    if (!this.drag) return;
+    const d = this.drag;
+    this.drag = null;
+    this.gDrag.clear(); this.gGhost.clear();
+    if (!d.moved) {
+      if (rotateQueued(this.R, d.qi)) this.sfx(660, 0.05, 'triangle', 0.04);
+      else this.toast('손님을 끌어서 빈 방에 놓으세요', '#d9c7a8', 640, 14);
+      this.drawTray();
+      return;
+    }
+    const pos = this.snap(d);
+    if (pos && fits(this.R, this.R.queue[d.qi].cells, pos.r, pos.c)) this.doPlace(d.qi, pos.r, pos.c);
+    else { this.drawTray(); this.sfx(150, 0.08, 'sawtooth', 0.03); }
+  }
+  snap(d) {
+    const p = this.R.queue[d.qi];
+    if (!p) return null;
+    const [h, w] = dims(p.cells);
+    const px = d.x - w * CELL / 2, py = d.y - DRAG_LIFT - h * CELL / 2;
+    return { r: Math.round((py - BY) / CELL), c: Math.round((px - BX) / CELL), px, py };
+  }
+  updateDrag() {
+    const d = this.drag, R = this.R, p = R.queue[d.qi];
+    this.drawTray();
+    const gd = this.gDrag, gg = this.gGhost;
+    gd.clear(); gg.clear();
+    const pos = this.snap(d);
+    const ok = fits(R, p.cells, pos.r, pos.c);
+    if (ok) {
+      const { rows, cols } = linesIfPlaced(R, p.cells, pos.r, pos.c);
+      gg.fillStyle(0xffe08a, 0.22);
+      rows.forEach(r => gg.fillRect(BX, BY + r * CELL, N * CELL, CELL));
+      cols.forEach(c => gg.fillRect(BX + c * CELL, BY, CELL, N * CELL));
+      p.cells.forEach(([r, c]) => drawTile(gg, BX + (pos.c + c) * CELL, BY + (pos.r + r) * CELL, CELL, p.color, 0.42));
+    }
+    p.cells.forEach(([r, c]) => drawTile(gd, pos.px + c * CELL, pos.py + r * CELL, CELL, p.color, 0.95));
+  }
+
+  // ═════════════ 배치 ═════════════
+  doPlace(qi, r, c) {
+    const R = this.R;
+    const res = place(R, qi, r, c);
+    if (!res.ok) return;
+    this.drawBoard();
+    this.drawTray();
+    this.refreshHud();
+    this.sfx(260, 0.07, 'triangle', 0.06);
+    // 놓은 칸 살짝 눌리는 연출
+    res.placedIdx.forEach(i => {
+      const x = BX + (i % N) * CELL + CELL / 2, y = BY + Math.floor(i / N) * CELL + CELL / 2;
+      const rr = this.add.rectangle(x, y, CELL - 4, CELL - 4, 0xffffff, 0.35).setDepth(5);
+      this.tweens.add({ targets: rr, alpha: 0, duration: 220, onComplete: () => rr.destroy() });
+    });
+    let wait = 150;
+    if (res.clear) wait = this.showClear(res.clear);
+    if (nightDone(R)) {
+      this.busy = true;
+      this.time.delayedCall(wait + 500, () => this.finishNight());
+    }
+  }
+
+  showClear(cl) {
+    // 비워지는 칸: 불이 꺼지듯 사라짐
+    cl.removed.forEach(({ i, color, soldier }, n) => {
+      const x = BX + (i % N) * CELL, y = BY + Math.floor(i / N) * CELL;
+      const g = this.add.graphics().setDepth(6);
+      if (soldier) drawSoldier(g, 0, 0, CELL); else drawTile(g, 0, 0, CELL, color);
+      g.setPosition(x, y);
+      this.tweens.add({ targets: g, alpha: 0, y: y - 10, duration: 420, delay: 40 + (n % 8) * 22, onComplete: () => g.destroy() });
+      const glow = this.add.rectangle(x + CELL / 2, y + CELL / 2, CELL, CELL, 0xffe7a3, 0.55).setDepth(7);
+      this.tweens.add({ targets: glow, alpha: 0, scaleX: 1.25, scaleY: 1.25, duration: 520, delay: (n % 8) * 22, onComplete: () => glow.destroy() });
+    });
+    const big = cl.k >= 2 || cl.factor > 1;
+    if (big) this.cameras.main.shake(140 + cl.k * 40, 0.002 + cl.k * 0.0012);
+    [523, 659, 784, 1046].slice(0, Math.min(4, cl.k + 1)).forEach((f, i) => this.time.delayedCall(i * 70, () => this.sfx(f, 0.35, 'sine', 0.06)));
+    const cy = BY + N * CELL / 2;
+    const eq = `칩 ${fmt(cl.chips)}  ×  배수 ${cl.mult}` + (cl.factor > 1 ? `  ×  ${cl.factor}` : '');
+    const t1 = txt(this, W / 2, cy - 30, eq, 18, '#ffe7a3', { bold: true }).setDepth(90).setAlpha(0);
+    const t2 = txt(this, W / 2, cy + 8, `+${fmt(cl.gain)}`, big ? 46 : 36, '#ffffff', { bold: true, serif: true }).setDepth(90).setAlpha(0);
+    t2.setStroke('#3a2410', 6 * S);
+    const t3 = cl.notes.length ? txt(this, W / 2, cy + 46, cl.notes.join('   '), 13, '#f3c969', { bold: true }).setDepth(90).setAlpha(0) : null;
+    const objs = [t1, t2, t3].filter(Boolean);
+    this.tweens.add({ targets: t1, alpha: 1, duration: 120 });
+    this.tweens.add({ targets: t2, alpha: 1, scaleX: { from: K * 0.4, to: K }, scaleY: { from: K * 0.4, to: K }, duration: 260, delay: 180, ease: 'Back.Out' });
+    if (t3) this.tweens.add({ targets: t3, alpha: 1, duration: 160, delay: 260 });
+    this.tweens.add({ targets: objs, alpha: 0, y: '-=24', duration: 380, delay: 1150, onComplete: () => objs.forEach(o => o.destroy()) });
+    return 900;
+  }
+
+  // ═════════════ 흐름 ═════════════
+  startRun() {
+    this.R = createRun((Math.random() * 0x7fffffff) | 0);
+    this.beginNight();
+  }
+
+  beginNight() {
+    const R = this.R;
+    const sp = startNight(R);
+    this.closed = false;
+    this.busy = true;
+    this.drawFloor(); this.drawBoard(); this.drawTray(); this.refreshHud();
+    this.state = 'intro';
+    this.clearUI();
+    const dim = this.add.rectangle(W / 2, H / 2, W, H, 0x07050a, 0.8).setInteractive();
+    this.ui.add(dim);
+    const g = this.add.graphics();
+    drawSym(g, 'star', W / 2, 190, 26, 0xfff1c7);
+    this.ui.add(g);
+    this.ui.add(txt(this, W / 2, 262, `${ORD[R.night]} 밤`, 46, '#f3c969', { bold: true, serif: true }));
+    this.ui.add(txt(this, W / 2, 322, `목표 숙박비  ${fmt(target(R))}`, 22, '#f5ead7', { bold: true }));
+    this.ui.add(txt(this, W / 2, 360, `오늘 밤 손님 ${guestsPerNight(R)}팀`, 16, '#d9c7a8'));
+    if (sp) this.ui.add(txt(this, W / 2, 410, sp.text, 16, '#ff9f8a', { bold: true }));
+    if (R.night === 1) this.ui.add(txt(this, W / 2, 480,
+      '손님 가족을 끌어서 방에 들이세요\n가로나 세로 한 줄이 가득 차면 그 줄 손님이 잠들고 숙박비가 들어옵니다\n여러 줄을 한꺼번에, 한 가족으로만 채우면 훨씬 많이 법니다',
+      14, '#cbb995', { lineSpacing: 6, wrap: 420 }));
+    this.ui.add(txt(this, W / 2, 600, '화면을 눌러 문을 연다', 15, '#8a7a66'));
+    this.time.delayedCall(250, () => { this.introReady = true; });
+    this.introReady = false;
+    dim.on('pointerdown', () => {
+      if (this.state !== 'intro' || !this.introReady) return;
+      this.clearUI(); this.state = 'play'; this.busy = false;
+      if (nightDone(R)) { this.busy = true; this.time.delayedCall(300, () => this.finishNight()); }
+    });
+    this.sfx(392, 0.5, 'sine', 0.05);
+  }
+
+  finishNight() {
+    const R = this.R;
+    const res = endNight(R);
+    this.closed = true;
+    this.refreshHud();
+    this.state = 'nightEnd';
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x07050a, 0.84).setInteractive());
+    this.ui.add(txt(this, W / 2, 200, res.success ? '여관 문을 닫았다' : '목표를 채우지 못했다', 32, res.success ? '#f3c969' : '#ff9f8a', { bold: true, serif: true }));
+    this.ui.add(txt(this, W / 2, 268, `오늘 숙박비  ${fmt(res.score)}`, 26, '#ffffff', { bold: true }));
+    this.ui.add(txt(this, W / 2, 304, `목표 ${fmt(res.target)}`, 16, '#d9c7a8'));
+    if (res.taxBonus) this.ui.add(txt(this, W / 2, 336, `세리: 남은 손님 ${res.left}팀  +${fmt(res.taxBonus)}`, 15, '#f3c969'));
+    this.ui.add(txt(this, W / 2, 380, `총 숙박비  ${fmt(R.total)}`, 18, '#f5ead7'));
+    if (res.success && !R.won) this.button('방문자 맞이하기', W / 2, 480, () => this.showVisitors());
+    else this.button(R.won ? '마지막 손님' : '결과 보기', W / 2, 480, () => this.showEnding());
+    this.sfx(res.success ? 660 : 180, 0.4, res.success ? 'sine' : 'sawtooth', 0.06);
+  }
+
+  // ═════════════ 방문자 / 개조 ═════════════
+  optionRow(y, symId, name, desc, cb) {
+    const bg = this.add.rectangle(W / 2, y, 430, 104, 0x241810).setStrokeStyle(2, 0x6b4f2a).setInteractive({ useHandCursor: true });
+    bg.on('pointerdown', cb);
+    const g = this.add.graphics();
+    g.fillStyle(0x140e0a, 1).fillCircle(78, y, 36);
+    drawSym(g, symId, 78, y, 20);
+    this.ui.add([bg, g, txt(this, 128, y - 20, name, 21, '#f3c969', { ox: 0, bold: true, serif: true }), txt(this, 128, y + 14, desc, 14, '#e9d8b8', { ox: 0, wrap: 300 })]);
+  }
+
+  showVisitors() {
+    const R = this.R;
+    this.state = 'visitor';
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x07050a, 0.9).setInteractive());
+    this.ui.add(txt(this, W / 2, 110, '밤늦게 찾아온 방문자', 26, '#f3c969', { bold: true, serif: true }));
+    this.ui.add(txt(this, W / 2, 146, `한 명을 여관에 머물게 하세요 (${R.visitors.length}/${MAX_VISITORS})`, 15, '#d9c7a8'));
+    const offers = visitorOffers(R);
+    offers.forEach((id, i) => this.optionRow(250 + i * 124, id, VISITORS[id].name, VISITORS[id].desc, () => this.pickVisitor(id)));
+    const sb = this.add.rectangle(W / 2, 650, 220, 46, 0x2e2218).setInteractive({ useHandCursor: true });
+    sb.on('pointerdown', () => this.showRenos());
+    this.ui.add([sb, txt(this, W / 2, 650, '그냥 보내기', 16, '#cbb995', { bold: true })]);
+  }
+  pickVisitor(id) {
+    if (this.state !== 'visitor') return;
+    const R = this.R;
+    this.sfx(784, 0.2, 'sine', 0.06);
+    if (R.visitors.length < MAX_VISITORS) { takeVisitor(R, id); this.showRenos(); return; }
+    // 자리가 꽉 찼으면 내보낼 방문자 선택
+    this.state = 'replace';
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x07050a, 0.92).setInteractive());
+    this.ui.add(txt(this, W / 2, 90, `${VISITORS[id].name}을(를) 들이려면 한 명을 떠나보내야 합니다`, 16, '#f3c969', { bold: true, wrap: 420 }));
+    R.visitors.forEach((v, k) => this.optionRow(180 + k * 110, v, VISITORS[v].name, VISITORS[v].desc, () => {
+      if (this.state !== 'replace') return;
+      takeVisitor(R, id, k); this.showRenos();
+    }));
+    const sb = this.add.rectangle(W / 2, 740, 220, 44, 0x2e2218).setInteractive({ useHandCursor: true });
+    sb.on('pointerdown', () => { if (this.state === 'replace') this.showRenos(); });
+    this.ui.add([sb, txt(this, W / 2, 740, '들이지 않기', 15, '#cbb995', { bold: true })]);
+  }
+
+  showRenos() {
+    const R = this.R;
+    this.state = 'reno';
+    this.drawVisitors();
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x07050a, 0.9).setInteractive());
+    this.ui.add(txt(this, W / 2, 130, '여관 손보기', 26, '#f3c969', { bold: true, serif: true }));
+    this.ui.add(txt(this, W / 2, 166, '하나를 고르세요', 15, '#d9c7a8'));
+    renoOffers(R).forEach((id, i) => this.optionRow(270 + i * 124, id, RENOS[id].name, RENOS[id].desc, () => {
+      if (this.state !== 'reno') return;
+      const cell = applyReno(R, id);
+      this.sfx(587, 0.2, 'sine', 0.06);
+      this.beginNight();
+    }));
+    this.ui.add(txt(this, W / 2, 680, `칸당 칩 ${R.cellVal}  ·  등불 ${R.lamps.size}개  ·  매일 손님 ${guestsPerNight(R)}팀`, 13, '#8a7a66'));
+  }
+
+  // ═════════════ 끝 ═════════════
+  showEnding() {
+    const R = this.R;
+    this.state = 'ending';
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x05040a, 0.95).setInteractive());
+    const g = this.add.graphics();
+    // 마구간 실루엣과 별
+    const sx = W / 2, sy = 300;
+    g.fillStyle(0x2b1d12, 1).fillRect(sx - 90, sy - 20, 180, 90);
+    g.fillStyle(0x3a2716, 1).fillTriangle(sx - 110, sy - 16, sx + 110, sy - 16, sx, sy - 80);
+    g.fillStyle(0xffc46b, 0.85).fillRect(sx - 26, sy + 14, 52, 56);
+    g.fillStyle(0xffc46b, 0.12).fillCircle(sx, sy + 40, 90);
+    g.fillStyle(0x1a120b, 1).fillRect(sx - 18, sy + 44, 36, 14);
+    drawSym(g, 'star', sx, 150, 20, 0xfff4d6);
+    g.lineStyle(1.5, 0xfff4d6, 0.35).lineBetween(sx, 172, sx, sy - 84);
+    this.ui.add(g);
+    const story = R.won
+      ? '여덟째 밤, 여관은 손님으로 가득 찼다.\n늦게 도착한 젊은 부부에게 내어 줄 방은 없었다.\n주인은 등불을 들고 그들을 마구간으로 안내했다.\n그 밤, 그곳에서 아기가 태어났다.'
+      : '여관은 더 이상 손님을 받을 수 없었다.\n문을 두드린 젊은 부부에게 주인은 고개를 저었다.\n"방이 없습니다. 마구간이라도 괜찮다면…"\n그 밤, 그곳에서 아기가 태어났다.';
+    this.ui.add(txt(this, W / 2, 470, story, 15, '#e9d8b8', { serif: true, lineSpacing: 8 }));
+    this.ui.add(txt(this, W / 2, 590, `총 숙박비  ${fmt(R.total)}`, 30, '#f3c969', { bold: true }));
+    this.ui.add(txt(this, W / 2, 628, R.won ? '여덟 밤을 모두 버텼다' : `${ORD[R.night]} 밤에 문을 닫음`, 15, '#cbb995'));
+    this.time.delayedCall(1800, () => this.askName());
+  }
+
+  askName() {
+    const R = this.R;
+    if (this.state !== 'ending') return;
+    let saved = '';
+    try { saved = localStorage.getItem(NAME_KEY) || ''; } catch (e) {}
+    let name = null;
+    if (R.total > 0) name = window.prompt('리더보드에 등록할 이름 (최대 8자, 취소하면 등록 안 함)', saved);
+    if (name && name.trim()) {
+      name = name.trim().slice(0, 8);
+      try { localStorage.setItem(NAME_KEY, name); } catch (e) {}
+      Leaderboard.add(name, R.total, R.night, R.won);
+    }
+    this.clearUI();
+    this.state = 'over';
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x07050a, 0.93).setInteractive());
+    this.ui.add(txt(this, W / 2, 110, `총 숙박비 ${fmt(R.total)}`, 32, '#f3c969', { bold: true, serif: true }));
+    this.ui.add(txt(this, W / 2, 152, R.won ? '여덟 밤 완주' : `${ORD[R.night]} 밤까지`, 15, '#cbb995'));
+    this.boardList(230, 8);
+    this.button('다시 하기', W / 2, 640, () => this.startRun());
+    this.button('처음 화면', W / 2, 716, () => this.showMenu(), 200, 0x3a2a1c, '#e9d8b8');
+  }
+
+  // ═════════════ 메뉴 / 공통 ═════════════
+  clearUI() { this.ui.removeAll(true); }
+
+  button(label, x, y, cb, w = 250, color = 0xe0a94a, tc = '#24150a') {
+    const bg = this.add.rectangle(x, y, w, 58, color).setStrokeStyle(2, shade(color, -0.4)).setInteractive({ useHandCursor: true });
+    bg.on('pointerdown', cb);
+    this.ui.add([bg, txt(this, x, y, label, 22, tc, { bold: true, serif: true })]);
+  }
+
+  boardList(y, n = 5) {
+    const list = Leaderboard.load().slice(0, n);
+    const lines = list.length
+      ? list.map((r, i) => `${i + 1}.  ${r.name}   ${fmt(r.score)}  (${r.won ? '완주' : r.nights + '밤'})`).join('\n')
+      : '아직 기록이 없습니다';
+    this.ui.add(txt(this, W / 2, y, '숙박부 (이 기기)', 19, '#f3c969', { bold: true, serif: true }));
+    this.ui.add(txt(this, W / 2, y + 28, lines, 16, '#efe2c8', { oy: 0, lineSpacing: 7 }));
+  }
+
+  showMenu() {
+    this.state = 'menu';
+    this.R = null;
+    this.gBoard.clear(); this.gTray.clear(); this.gHud.clear(); this.gVis.clear(); this.drawFloor();
+    [this.nightText, this.totalText, this.barText, this.guestText, this.hintText].forEach(t => t.setText(''));
+    this.visNames.forEach(t => t.destroy()); this.visZones.forEach(z => z.destroy()); this.visNames = []; this.visZones = [];
+    this.clearUI();
+    this.ui.add(this.add.rectangle(W / 2, H / 2, W, H, 0x0a0710, 0.9).setInteractive());
+    const g = this.add.graphics();
+    // 베들레헴 지붕 실루엣
+    g.fillStyle(0x1d140d, 1);
+    [[40, 70, 60], [110, 50, 90], [175, 80, 70], [260, 60, 100], [330, 75, 66], [400, 55, 80]].forEach(([x, w, h]) => g.fillRect(x, 300 - h, w, h + 10));
+    g.fillStyle(0x2a1c12, 1).fillRect(0, 300, W, 8);
+    [[70, 255], [140, 275], [290, 260], [420, 262]].forEach(([x, y]) => g.fillStyle(0xffc46b, 0.9).fillRect(x, y, 8, 10));
+    drawSym(g, 'star', W / 2, 90, 22, 0xfff4d6);
+    this.ui.add(g);
+    this.ui.add(txt(this, W / 2, 160, '방이 없습니다', 50, '#f3c969', { bold: true, serif: true }));
+    this.ui.add(txt(this, W / 2, 210, '베들레헴 여관의 여덟 밤', 18, '#e9d8b8', { serif: true }));
+    this.ui.add(txt(this, W / 2, 400,
+      '호적 등록으로 붐비는 베들레헴, 당신은 여관 주인입니다.\n\n' +
+      '손님 가족을 끌어서 방에 들이세요.\n가로·세로 한 줄이 가득 차면 손님이 잠들고 숙박비가 들어옵니다.\n\n' +
+      '밤마다 목표 숙박비를 채우면 방문자와 개조를 골라 더 강해집니다.\n목표를 못 채우면 여관 문을 닫습니다.',
+      14, '#d9c7a8', { lineSpacing: 5, wrap: 430 }));
+    this.button('문 열기', W / 2, 540, () => this.startRun());
+    this.boardList(605, 4);
+    this.ui.add(txt(this, W / 2, 790, `build ${BUILD_TAG} · 해상도 ×${S}`, 11, '#4a3a2a'));
+  }
+
+  toast(str, color, y = 400, size = 17) {
+    const t = txt(this, W / 2, y, str, size, color || '#ffffff', { bold: true, wrap: 440 }).setDepth(170);
+    t.setStroke('#140e0a', 5 * S);
+    this.tweens.add({ targets: t, y: y - 30, alpha: 0, duration: 900, delay: 900, onComplete: () => t.destroy() });
+  }
+
+  initAudio() {
+    if (this.ac) { if (this.ac.state === 'suspended') this.ac.resume(); return; }
+    try { const C = window.AudioContext || window.webkitAudioContext; if (C) this.ac = new C(); } catch (e) { this.ac = null; }
+  }
+  sfx(freq, dur, type = 'sine', vol = 0.06) {
+    if (!this.ac) return;
+    try {
+      const t0 = this.ac.currentTime, o = this.ac.createOscillator(), g = this.ac.createGain();
+      o.type = type; o.frequency.setValueAtTime(freq, t0);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(vol, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      o.connect(g); g.connect(this.ac.destination);
+      o.start(t0); o.stop(t0 + dur + 0.02);
+    } catch (e) {}
+  }
+}
+
+function boot() {
+  new Phaser.Game({
+    type: Phaser.AUTO,
+    parent: 'game',
+    width: W * S,
+    height: H * S,
+    backgroundColor: '#140e0a',
+    scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH },
+    scene: Main,
+  });
+}
+// 웹폰트를 기다렸다가 시작 (최대 2초)
+(function () {
+  let started = false;
+  const go = () => { if (!started) { started = true; boot(); } };
+  setTimeout(go, 2000);
+  if (document.fonts && document.fonts.load) {
+    Promise.all([document.fonts.load('700 20px "Gowun Batang"'), document.fonts.load('400 20px "Noto Sans KR"'), document.fonts.load('700 20px "Noto Sans KR"')])
+      .then(go, go);
+  } else go();
+})();
+</script>
+</body>
+</html>
